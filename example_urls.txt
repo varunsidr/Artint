@@ -1,0 +1,2 @@
+# Replace these with article URLs that permit automated access
+https://blog.python.org/

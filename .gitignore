@@ -1,0 +1,39 @@
+# Local environments and Python caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Private libraries, publisher content, generated reports, PDFs and backups
+/data/
+/output/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.log
+
+# Local credentials/configuration (the shared theme config is public)
+.env
+.env.*
+!.env.example
+.streamlit/secrets*.toml
+.streamlit/credentials.toml
+.aws/
+.codex/
+.agents/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.tmp
