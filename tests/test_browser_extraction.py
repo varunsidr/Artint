@@ -1,5 +1,6 @@
 """Offline policy regressions and opt-in real-browser rendering fixtures."""
 import json
+import asyncio
 import os
 import socket
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +9,22 @@ from urllib.robotparser import RobotFileParser
 import pytest
 
 from app import browser_render, extract
+
+
+def test_browser_launch_always_requests_the_os_sandbox(monkeypatch):
+    monkeypatch.setenv('ARTICLE_BROWSER_CHANNEL', 'auto')
+    calls = []
+    class Chromium:
+        async def launch(self, **options):
+            calls.append(options)
+            raise RuntimeError('Sandbox unavailable')
+    class Playwright:
+        chromium = Chromium()
+    with pytest.raises(extract.ExtractionError, match='sandboxed browser'):
+        asyncio.run(browser_render._launch(Playwright()))
+    assert len(calls) == 3
+    assert all(options['chromium_sandbox'] is True for options in calls)
+
 
 URL = 'https://example.org/javascript-article'
 PARAGRAPHS = [

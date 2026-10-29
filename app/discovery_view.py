@@ -101,18 +101,20 @@ def render_discovery():
             'Free news discovery <span>·</span> Bing News RSS <span>·</span> Personal, non-commercial research</div>')
     with st.container(key='discovery_search'):
         with st.form('discover_articles', enter_to_submit=False):
-            st.text_input('Topics', placeholder='AI bubble, data center spending', max_chars=500,
+            st.text_input('Topics', placeholder='Layoffs, housing policy, AI investment', max_chars=500,
                           help='Enter one to five topics separated by commas. Results can match any topic.',
                           key='discover_topics', persist_state='session')
+            st.caption('Topic refinements')
             words, matching = st.columns([2, 1])
             with words:
-                st.text_input('Priority keywords (optional)', placeholder='capex, Nvidia, debt', max_chars=400,
+                st.text_input('Priority keywords (optional)', placeholder='A company, location, or phrase to focus on', max_chars=400,
                               help='Separate words or phrases with commas. Matches are highlighted in titles and previews.',
                               key='discover_keywords', persist_state='session')
             with matching:
                 st.selectbox('Keyword matching', ['Highlight only', 'Match any', 'Match all'],
                              help='Required keywords must appear in the title or search preview.',
                              key='discover_keyword_mode', persist_state='session')
+            st.caption('General filters')
             publishers, language, number = st.columns([2, 1, 1])
             with publishers:
                 st.multiselect('Publishers', list(PUBLISHERS), placeholder='All publishers',

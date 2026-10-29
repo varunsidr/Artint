@@ -1,0 +1,6 @@
+{
+  "name": "Replace with the topic and evaluation window",
+  "selection_method": "Describe where candidates were found, when the list was fixed, publisher/source-type strata and how selection avoids using capture outcomes. This example is a template, not an executed benchmark.",
+  "inclusion_criteria": "Specify individual public HTML article types, languages, topic scope and dates. Define how undated articles and permitted short source types are handled before capture.",
+  "exclusion_criteria": "Declare rules for listings, unsupported files, abstracts outside scope, duplicates and access restrictions. Retain every frozen candidate and a human exclusion reason; do not discard a source merely because capture failed."
+}

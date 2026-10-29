@@ -155,14 +155,15 @@ def test_library_filter_values_survive_navigation_and_clear_together(dashboard):
     app.selectbox(key='library_collection').select('bubble').run()
     app.multiselect(key='library_publishers').select('Example').run()
     app.selectbox(key='library_status').select('Needs analysis').run()
-    app.selectbox(key='library_lens').select('credit').run()
-    app.selectbox(key='library_entity').select('OpenAI').run()
     app.selectbox(key='library_length').select('Up to 5 min').run()
     app.selectbox(key='library_published').select('Custom dates').run()
     app.date_input(key='library_date_from').set_value(date(2026, 10, 1)).run()
     app.date_input(key='library_date_until').set_value(date(2026, 10, 27)).run()
     app.selectbox(key='library_page_size').select(50).run()
     app.selectbox(key='library_sort').select('Newest published').run()
+    app.checkbox(key='library_ai_coverage').check().run()
+    app.selectbox(key='library_lens').select('credit').run()
+    app.selectbox(key='library_entity').select('OpenAI').run()
     assert not app.exception
     before = app.session_state['library_controls'].copy()
     app.button(key='nav_analytics').click().run()
@@ -176,7 +177,8 @@ def test_library_filter_values_survive_navigation_and_clear_together(dashboard):
     assert app.text_input(key='library_search').value == ''
     assert app.multiselect(key='library_publishers').value == []
     assert app.selectbox(key='library_collection').value == ''
-    assert app.selectbox(key='library_lens').value == ''
+    assert app.session_state['library_lens'] == ''
+    assert not app.checkbox(key='library_ai_coverage').value
     assert app.selectbox(key='library_page_size').value == 50
     assert app.selectbox(key='library_sort').value == 'Newest published'
 
@@ -202,6 +204,67 @@ def test_research_only_loads_one_saved_article_on_initial_render(dashboard):
         assert len(next(widget for widget in app.multiselect if widget.key == 'research_selected_ids').options) == 25
 
 
+def test_reader_handoff_focuses_unanalyzed_article_and_preserves_filters(dashboard):
+    original = storage.get_article('offline')
+    storage.upsert(dict(original, id='new', title='New saved article', url='https://example.org/new'))
+    app = dashboard
+    app.button(key='nav_research').click().run()
+    app.text_input(key='research_search').set_value('unrelated topic').run()
+    app.button(key='nav_library').click().run()
+    app.text_input(key='library_search').set_value('New saved article').run()
+    app.button(key='read_new').click().run()
+    app.button(key='research_article_new').click().run()
+    assert not app.exception and app.session_state['workspace_view'] == 'Research'
+    assert app.session_state['research_focus_article'] == 'new'
+    assert app.button(key='focused_analyze_new').disabled  # Offline must remain actionable, not crash.
+    assert not any(button.label == 'Analyze this page' for button in app.button)
+    assert app.session_state['research_search'] == 'unrelated topic'
+    next(button for button in app.button if button.label == 'Return to Library').click().run()
+    assert not app.exception and app.text_input(key='library_search').value == 'New saved article'
+    assert 'research_focus_article' not in app.session_state
+
+
+def test_research_handoff_handles_deleted_article_without_analyzing_another(dashboard):
+    app = dashboard
+    app.session_state['research_focus_article'] = 'deleted'
+    app.button(key='nav_research').click().run()
+    assert not app.exception and any('no longer in the library' in item.value for item in app.warning)
+    assert not any(button.label == 'Analyze this page' for button in app.button)
+    next(button for button in app.button if button.label == 'Back to research library').click().run()
+    assert not app.exception and app.multiselect(key='research_selected_ids')
+
+
+def test_identical_research_reuses_last_answer_but_fresh_mode_and_changes_do_not(dashboard):
+    from app.ai_dashboard import _model_status
+    client_answer = dict(question='What is saved?', supported=True,
+                         claims=[dict(text='Saved evidence.', sources=['offline:P1'])],
+                         passages=[dict(id='offline:P1', article_id='offline', title='Offline research',
+                                        text='Saved evidence.', url='https://example.org/research')])
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b', 'qwen3-embedding:0.6b'], None)), \
+            patch('app.ai_dashboard.answer_question', return_value=client_answer.copy()) as answer:
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        app.text_area[0].set_value('What is saved?')
+        submit = 'FormSubmitter:article_question-Research'
+        app.button(key=submit).click().run()
+        assert not app.exception and answer.call_count == 1
+        app.button(key=submit).click().run()
+        assert not app.exception and answer.call_count == 1
+        assert any('Reused the previous result' in item.value for item in app.caption)
+        next(box for box in app.checkbox if box.label == 'Generate a fresh result').check()
+        app.button(key=submit).click().run()
+        assert not app.exception and answer.call_count == 2
+        next(box for box in app.checkbox if box.label == 'Generate a fresh result').uncheck()
+        app.text_area[0].set_value('A changed question?')
+        app.button(key=submit).click().run()
+        assert not app.exception and answer.call_count == 3
+        original = storage.get_article('offline')
+        storage.upsert(dict(original, text=original['text'] + ' Changed source evidence.'))
+        app.button(key=submit).click().run()
+        assert not app.exception and answer.call_count == 4
+    _model_status.clear()
+
+
 def test_research_collection_excludes_unrelated_articles_and_allows_scoped_questions(dashboard):
     original = storage.all_articles()[0]
     storage.create_collection('ai-bubble', 'AI bubble', 'AI investment debate')
@@ -217,6 +280,86 @@ def test_research_collection_excludes_unrelated_articles_and_allows_scoped_quest
     assert not app.checkbox(key='research_all_matches').disabled
     app.checkbox(key='research_all_matches').check().run()
     assert any('search 30 articles' in caption.value for caption in app.caption)
+
+
+def _add_filter_context_articles():
+    from tests.test_scoped_filters import insight
+    original = storage.all_articles()[0]
+    for identifier, title, topics in [('layoffs', 'Layoffs in retail', ['Layoffs', 'Retail employment']),
+                                       ('glass', 'Ancient Roman glass', ['Ancient Roman Glass'])]:
+        item = dict(original, id=identifier, url='https://example.org/' + identifier,
+                    title=title, text=title + '. Synthetic source evidence. ' * 20)
+        storage.upsert(item)
+        insight(item, topics)
+
+
+def test_research_topics_follow_search_and_clear_incompatible_selections(dashboard):
+    _add_filter_context_articles()
+    app = dashboard
+    app.button(key='nav_research').click().run()
+    app.text_input(key='research_search').set_value('layoff').run()
+    assert not app.exception
+    assert set(app.multiselect(key='research_topics').options) == {'Layoffs', 'Retail employment'}
+    app.multiselect(key='research_topics').select('Layoffs').run()
+    app.button(key='nav_analytics').click().run()
+    app.button(key='nav_research').click().run()
+    assert app.text_input(key='research_search').value == 'layoff'
+    assert app.multiselect(key='research_topics').value == ['Layoffs']
+    app.text_input(key='research_search').set_value('glass').run()
+    assert not app.exception
+    assert app.multiselect(key='research_topics').value == []
+    assert app.multiselect(key='research_topics').options == ['Ancient Roman Glass']
+    assert any('search 1 articles' in caption.value for caption in app.caption)
+    app.text_input(key='research_search').set_value('missing-source').run()
+    assert not app.exception
+    assert app.multiselect(key='research_topics').options == []
+    assert app.multiselect(key='research_topics').disabled
+
+
+def test_library_topics_are_scoped_and_ai_filters_require_opt_in(dashboard):
+    _add_filter_context_articles()
+    app = dashboard.run()
+    app.multiselect(key='library_topics').select('Ancient Roman Glass').run()
+    app.text_input(key='library_search').set_value('layoff').run()
+    assert not app.exception
+    assert app.multiselect(key='library_topics').value == []
+    assert set(app.multiselect(key='library_topics').options) == {'Layoffs', 'Retail employment'}
+    assert not app.session_state['library_ai_coverage']
+    assert not any(widget.key == 'library_ai_coverage' for widget in app.checkbox)
+    assert not any(widget.key in ('library_lens', 'library_entity') for widget in app.selectbox)
+    assert len([button for button in app.button if button.key and button.key.startswith('read_')]) == 1
+
+
+def test_research_unanalyzed_scope_has_no_unrelated_topic_fallback(dashboard):
+    original = storage.all_articles()[0]
+    storage.upsert(dict(original, id='layoffs', url='https://example.org/layoffs', title='Layoffs in retail'))
+    app = dashboard
+    app.button(key='nav_research').click().run()
+    app.text_input(key='research_search').set_value('layoff').run()
+    assert not app.exception
+    assert app.multiselect(key='research_topics').options == []
+    assert app.multiselect(key='research_topics').disabled
+    assert any('No saved analysis topics in this selection' in caption.value for caption in app.caption)
+    assert len(app.multiselect(key='research_selected_ids').options) == 1
+
+
+def test_library_scoped_selection_is_not_limited_by_global_top_topics(dashboard):
+    from tests.test_scoped_filters import insight
+    original = storage.all_articles()[0]
+    for index in range(105):
+        item = dict(original, id=f'other{index}', url=f'https://example.org/other/{index}', title='Unrelated science report')
+        storage.upsert(item)
+        insight(item, [f'Other topic {index:03}'])
+    rare = dict(original, id='rare-layoff', url='https://example.org/rare-layoff', title='Layoffs in retail')
+    storage.upsert(rare)
+    insight(rare, ['Z rare workforce topic'])
+    assert 'Z rare workforce topic' not in storage.library_overview()['topics']
+    app = dashboard.run()
+    app.text_input(key='library_search').set_value('layoff').run()
+    assert app.multiselect(key='library_topics').options == ['Z rare workforce topic']
+    app.multiselect(key='library_topics').select('Z rare workforce topic').run()
+    assert not app.exception
+    assert app.multiselect(key='library_topics').value == ['Z rare workforce topic']
 
 
 def test_discovery_previews_require_explicit_import_and_selection_survives_navigation(dashboard):

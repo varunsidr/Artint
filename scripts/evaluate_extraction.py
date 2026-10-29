@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import runpy
 import re
 import sys
@@ -25,6 +26,8 @@ from app.extract import _request_html, extract_document
 
 MAX_CACHE_BYTES = 128_000_000
 CRITERIA = ('body_complete', 'title_correct', 'metadata_correct', 'no_boilerplate')
+REVIEW_CRITERIA = (*CRITERIA, 'date_correct', 'publisher_correct', 'no_missing_sections', 'not_duplicate')
+SOURCE_KINDS = ('article', 'analysis', 'opinion', 'abstract', 'transcript', 'other')
 
 
 def stamp():
@@ -58,6 +61,212 @@ def freeze(audit, output):
     return target
 
 
+def freeze_candidates(candidates, protocol_path, output):
+    """Freeze a declared candidate cohort before capture; no network or library IO."""
+    if not protocol_path:
+        raise ValueError('Provide --protocol with the candidate selection and eligibility rules.')
+    if candidates.stat().st_size > 2_000_000 or protocol_path.stat().st_size > 16_000:
+        raise ValueError('Candidate list or protocol exceeds its size budget.')
+    protocol_bytes = protocol_path.read_bytes()
+    protocol = json.loads(protocol_bytes)
+    for key in ('name', 'selection_method', 'inclusion_criteria', 'exclusion_criteria'):
+        if not isinstance(protocol.get(key), str) or not protocol[key].strip():
+            raise ValueError(f'Protocol requires a nonempty {key}.')
+    protocol = {key: protocol[key] for key in ('name', 'selection_method', 'inclusion_criteria', 'exclusion_criteria')}
+    if any((output / name).exists() for name in ('manifest.json', 'baseline.json', 'improved.json')):
+        raise ValueError('Use a new cohort directory; existing captures/manifests cannot be relabelled prospective.')
+    with candidates.open(encoding='utf-8-sig', newline='') as stream:
+        entries = list(csv.DictReader(stream))
+    if not 1 <= len(entries) <= 500:
+        raise ValueError('Declare 1-500 candidates; small development cohorts do not satisfy the release target.')
+    cases, seen = [], set()
+    for entry in entries:
+        url, kind = entry.get('url', '').strip(), entry.get('source_kind', '').strip()
+        parsed = urlsplit(url)
+        if len(url) > 2048 or any(ord(character) < 32 for character in url) or parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('Candidate URLs must be complete HTTP(S) URLs without credentials.')
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError('Candidate URL port is invalid.') from exc
+        if url in seen or kind not in SOURCE_KINDS:
+            raise ValueError('Candidate URLs must be unique and source_kind must use a documented category.')
+        seen.add(url)
+        cases.append(dict(id=digest(url.encode())[:16], url=url, publisher=parsed.hostname.lower(), source_kind=kind))
+    target = output / 'manifest.json'
+    atomic_json(target, dict(version=2, created_at=stamp(), cohort_kind='prospective_candidates',
+                            selection=protocol['selection_method'], protocol=protocol,
+                            protocol_sha256=digest(protocol_bytes), cases=cases,
+                            limitations='Declared candidate cohort. Eligibility, extraction completeness and metadata require human review. This is not a representative sample of the web.',
+                            cache_policy='Publisher HTML/text stays local; no redistribution permission is assumed.'))
+    return target
+
+
+def _review_context(output, phase):
+    if phase not in ('baseline', 'improved'):
+        raise ValueError('Choose a known evaluation phase.')
+    manifest_path, report_path = output / 'manifest.json', output / (phase + '.json')
+    if manifest_path.stat().st_size > 1_000_000 or report_path.stat().st_size > 8_000_000:
+        raise ValueError('Review input exceeds its metadata budget.')
+    manifest_bytes = manifest_path.read_bytes()
+    manifest, report = json.loads(manifest_bytes), json.loads(report_path.read_text(encoding='utf-8'))
+    if report['phase'] != phase or report['manifest_sha256'] != digest(manifest_bytes):
+        raise ValueError('Phase and frozen manifest fingerprints do not match.')
+    cases = manifest['cases']
+    rows = {row['id']: row for row in report['results']}
+    if len(rows) != len(report['results']) or set(rows) != {case['id'] for case in cases}:
+        raise ValueError('Finish the complete phase before preparing or scoring a review.')
+    expected = {}
+    for case in cases:
+        row = rows[case['id']]
+        if not re.fullmatch(r'[0-9a-f]{16}', case['id']) or case['id'] != digest(case['url'].encode())[:16]:
+            raise ValueError('Review case IDs must match their URL hashes.')
+        evidence = {key: row.get(key) for key in ('id', 'status', 'html_sha256', 'text_sha256', 'title', 'published', 'author', 'failure')}
+        reading_hash = None
+        if row['status'] == 'captured' and row.get('local_reading_copy'):
+            relative = f'local-cache/{case["id"]}.{phase}.txt'
+            if row['local_reading_copy'] != relative:
+                raise ValueError('Unexpected reading-copy path in phase metadata.')
+            reading, cache = output / relative, output / 'local-cache'
+            if reading.is_symlink() or cache.is_symlink():
+                raise ValueError('Review reading copies must not be symbolic links.')
+            if reading.exists():
+                if reading.stat().st_size > 8_000_000:
+                    raise ValueError('Reading copy exceeds the review size budget.')
+                body = reading.read_bytes()
+                prefix = (row['title'] + '\n' + row.get('final_url', case['url']) + '\n\n').encode()
+                if not body.startswith(prefix) or digest(body[len(prefix):]) != row['text_sha256']:
+                    raise ValueError('Local reading copy is stale or modified relative to the captured phase.')
+                reading_hash = digest(body)
+        evidence['reading_sha256'] = reading_hash
+        evidence.update(extraction_sha256=report['extraction_sha256'], diagnostics_sha256=report['diagnostics_sha256'], mode=report['mode'])
+        expected[case['id']] = dict(case, status=row['status'], reading_available=reading_hash is not None,
+                                    evidence_sha256=digest(json.dumps(evidence, sort_keys=True).encode()))
+    return manifest, report, expected
+
+
+def prepare_phase_review(output, phase):
+    manifest, report, expected = _review_context(output, phase)
+    path = output / f'review-{phase}-v2.csv'
+    fields = ['id', 'url', 'source_kind', 'capture_status', 'phase', 'manifest_sha256', 'evidence_sha256',
+              'eligibility', 'exclusion_reason', *REVIEW_CRITERIA, 'review_kind', 'reviewer', 'reviewed_at', 'notes']
+    # Exclusive creation preserves completed labels and all legacy review files.
+    with path.open('x', encoding='utf-8', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for case in expected.values():
+            writer.writerow(dict(id=case['id'], url=case['url'], source_kind=case['source_kind'],
+                                  capture_status=case['status'], phase=phase, manifest_sha256=report['manifest_sha256'],
+                                  evidence_sha256=case['evidence_sha256'], eligibility='pending',
+                                  **{criterion: 'not_reviewed' for criterion in REVIEW_CRITERIA}))
+    return path
+
+
+def _labelled_review(path, phase, report, expected):
+    if path.stat().st_size > 2_000_000:
+        raise ValueError('Review checklist exceeds its size budget.')
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        entries = list(csv.DictReader(stream))
+    seen, finalized, decisions, excluded = set(), {}, {}, 0
+    for row in entries:
+        identifier = row.get('id')
+        if identifier not in expected or identifier in seen:
+            raise ValueError('Review has an unknown or duplicate case.')
+        seen.add(identifier)
+        case = expected[identifier]
+        if any(row.get(key) != value for key, value in dict(phase=phase, manifest_sha256=report['manifest_sha256'],
+                evidence_sha256=case['evidence_sha256'], url=case['url'], capture_status=case['status'], source_kind=case['source_kind']).items()):
+            raise ValueError('Review contains stale or modified source/phase fingerprints; prepare a review for the correct snapshot.')
+        eligibility = row.get('eligibility')
+        if eligibility not in ('pending', 'eligible', 'excluded'):
+            raise ValueError('Eligibility must be pending, eligible or excluded.')
+        if eligibility == 'pending':
+            continue
+        if row.get('review_kind') != 'human' or not row.get('reviewer', '').strip():
+            raise ValueError('Final labels require an identified, declared human reviewer.')
+        try:
+            reviewed_at = datetime.fromisoformat(row.get('reviewed_at', '').replace('Z', '+00:00'))
+            if reviewed_at.tzinfo is None:
+                raise ValueError()
+        except ValueError as exc:
+            raise ValueError('Final labels require reviewed_at with a timezone.') from exc
+        if eligibility == 'excluded':
+            if not row.get('exclusion_reason', '').strip():
+                raise ValueError('Every exclusion requires a reason; do not remove failed captures.')
+            excluded += 1
+            decisions[identifier] = dict(decision='excluded', reviewer=row['reviewer'].strip())
+            continue
+        if case['status'] == 'captured' and any(row.get(key) not in ('pass', 'fail') for key in REVIEW_CRITERIA):
+            raise ValueError('Captured eligible sources require every review criterion.')
+        if case['status'] == 'captured' and not case['reading_available'] and all(row.get(key) == 'pass' for key in REVIEW_CRITERIA):
+            raise ValueError('An unavailable reading copy cannot receive an acceptable-body judgement.')
+        finalized[identifier] = dict(case, reviewer=row['reviewer'].strip(),
+                                      passed=case['status'] == 'captured' and all(row.get(key) == 'pass' for key in REVIEW_CRITERIA))
+        decisions[identifier] = dict(decision='pass' if finalized[identifier]['passed'] else 'fail', reviewer=row['reviewer'].strip())
+    if seen != set(expected):
+        raise ValueError('Review is missing frozen cases; retain every row, including exclusions and failures.')
+    return finalized, excluded, len(expected) - len(finalized) - excluded, decisions
+
+
+def _wilson(passed, total):
+    """Descriptive binomial interval; does not model publisher dependence."""
+    if not total:
+        return None
+    z, rate = 1.959963984540054, passed / total
+    denominator = 1 + z * z / total
+    centre = (rate + z * z / (2 * total)) / denominator
+    margin = z * math.sqrt(rate * (1 - rate) / total + z * z / (4 * total * total)) / denominator
+    return [round(max(0., centre - margin), 4), round(min(1., centre + margin), 4)]
+
+
+def summarize_phase_review(output, phase, review_path=None, second_review_path=None):
+    manifest, report, expected = _review_context(output, phase)
+    path = review_path or output / f'review-{phase}-v2.csv'
+    finalized, excluded, pending, decisions = _labelled_review(path, phase, report, expected)
+    passed, count = sum(row['passed'] for row in finalized.values()), len(finalized)
+    hosts = {row['publisher'] for row in finalized.values()}
+    strata = {}
+    for key in ('publisher', 'source_kind'):
+        groups = defaultdict(list)
+        for row in finalized.values():
+            groups[row[key]].append(row['passed'])
+        strata[key] = {name: dict(reviewed=len(values), passed=sum(values), pass_rate=round(sum(values) / len(values), 4)) for name, values in sorted(groups.items())}
+    double_reviewed, disagreements = 0, []
+    if second_review_path:
+        _, _, _, second = _labelled_review(second_review_path, phase, report, expected)
+        for identifier in decisions.keys() & second.keys():
+            if decisions[identifier]['reviewer'].casefold() == second[identifier]['reviewer'].casefold():
+                raise ValueError('Second review must identify a different human reviewer.')
+            double_reviewed += int(identifier in finalized)
+            if decisions[identifier]['decision'] != second[identifier]['decision']:
+                disagreements.append(identifier)
+    interval = _wilson(passed, count)
+    prospective = manifest.get('cohort_kind') == 'prospective_candidates' and bool(manifest.get('protocol_sha256'))
+    observed_target = bool(count >= 100 and len(hosts) >= 10 and not pending and passed / count >= .9)
+    result = dict(version=2, phase=phase, created_at=stamp(), manifest_sha256=report['manifest_sha256'],
+                  review_sha256=digest(path.read_bytes()), total_cases=len(expected), reviewed_eligible=count,
+                  cohort_by_publisher=dict(Counter(case['publisher'] for case in expected.values())),
+                  cohort_by_source_kind=dict(Counter(case['source_kind'] for case in expected.values())),
+                  reviewed_hosts=len(hosts), passed=passed, failed=count-passed, excluded=excluded, pending=pending,
+                  pass_rate=round(passed / count, 4) if count else None, wilson_95_interval=interval,
+                  by_publisher=strata['publisher'], by_source_kind=strata['source_kind'],
+                  double_reviewed=double_reviewed, disagreements=disagreements, prospective_cohort=prospective,
+                  observed_target_met=observed_target,
+                  release_gate_met=bool(observed_target and prospective and double_reviewed >= math.ceil(count * .2) and not disagreements),
+                  limitations='Human labels are declarations, not independently authenticated identities. Wilson intervals assume independent cases and do not account for publisher/story dependence. The release gate concerns the declared cohort only, not a general-web success rate; do not present this interval as population or cluster-aware evidence.')
+    if second_review_path:
+        result['second_review_sha256'] = digest(second_review_path.read_bytes())
+    atomic_json(output / f'review-{phase}-summary.json', result)
+    rate = 'Not established (no reviewed eligible cases)' if result['pass_rate'] is None else f"{passed}/{count} ({100 * passed / count:.1f}%)"
+    lines = ['# Human extraction review', '', f'Phase: {phase}', '',
+             f'- Frozen cases: {len(expected)}; eligible reviewed: {count}; excluded: {excluded}; pending: {pending}.',
+             f'- Reviewed pass rate: {rate}.', f'- Double-reviewed: {double_reviewed}; disagreements: {len(disagreements)}.',
+             f'- Declared cohort gate met: {result["release_gate_met"]}.', '', result['limitations'], '',
+             'A convenience sample cannot become a prospective benchmark by filling in labels. No publisher bodies are included in this report.', '']
+    (output / f'review-{phase}-summary.md').write_text('\n'.join(lines), encoding='utf-8')
+    return result
+
+
 def review_totals(path, cases):
     if not path.exists():
         return {'reviewed_eligible': 0, 'reviewed_publishers': 0, 'passed': 0, 'pass_rate': None, 'release_gate_met': False}
@@ -78,7 +287,8 @@ def review_totals(path, cases):
     rate = passed / len(reviewed) if reviewed else None
     return {'reviewed_eligible': len(reviewed), 'reviewed_publishers': len(hosts), 'passed': passed,
             'pass_rate': round(rate, 4) if rate is not None else None,
-            'release_gate_met': len(reviewed) >= 100 and len(hosts) >= 10 and rate >= .9}
+            'release_gate_met': False, 'review_schema': 'legacy-unbound',
+            'limitations': 'Legacy review counts are not phase/hash-bound and cannot establish the release gate. Use the v2 phase review commands.'}
 
 
 def make_checklist(path, cases):
@@ -184,8 +394,8 @@ def evaluate(options):
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     cases = manifest['cases']
-    if not 1 <= len(cases) <= 100 or len({row['id'] for row in cases}) != len(cases):
-        raise ValueError('Expected 1-100 unique manifest cases.')
+    if not 1 <= len(cases) <= 500 or len({row['id'] for row in cases}) != len(cases):
+        raise ValueError('Expected 1-500 unique manifest cases.')
     for case in cases:
         if not re.fullmatch(r'[0-9a-f]{16}', case['id']) or case['id'] != digest(case['url'].encode())[:16]:
             raise ValueError('Manifest case IDs must match their URL hashes.')
@@ -301,6 +511,12 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'output/evaluations/ai-bubble-20261028')
     parser.add_argument('--audit', type=Path, default=ROOT/'output/ai-bubble-collection.json')
     parser.add_argument('--freeze', action='store_true')
+    parser.add_argument('--freeze-candidates', type=Path, help='Freeze a declared candidate CSV and protocol without fetching.')
+    parser.add_argument('--protocol', type=Path, help='JSON selection/inclusion/exclusion protocol for a new candidate cohort.')
+    parser.add_argument('--prepare-review', action='store_true', help='Create a new phase/hash-bound human review CSV; never overwrite labels.')
+    parser.add_argument('--review-summary', action='store_true', help='Validate phase-bound human labels and summarize without network or capture changes.')
+    parser.add_argument('--review-file', type=Path)
+    parser.add_argument('--second-review-file', type=Path)
     parser.add_argument('--phase', choices=('baseline', 'improved'), default='baseline')
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--resume', action='store_true')
@@ -308,7 +524,20 @@ def main():
     parser.add_argument('--engine', choices=('current', 'frozen'), default='current', help='Frozen replays the recorded baseline source after verifying its checksum.')
     options = parser.parse_args()
     try:
-        evaluate(options)
+        if sum((options.freeze, bool(options.freeze_candidates), options.prepare_review, options.review_summary)) > 1:
+            raise ValueError('Choose one freeze/review action at a time.')
+        if (options.review_file or options.second_review_file) and not options.review_summary:
+            raise ValueError('Review files require --review-summary; no capture was started.')
+        if options.protocol and not options.freeze_candidates:
+            raise ValueError('--protocol requires --freeze-candidates; no capture was started.')
+        if options.freeze_candidates:
+            print(freeze_candidates(options.freeze_candidates, options.protocol, options.output.resolve()))
+        elif options.prepare_review:
+            print(prepare_phase_review(options.output.resolve(), options.phase))
+        elif options.review_summary:
+            print(json.dumps(summarize_phase_review(options.output.resolve(), options.phase, options.review_file, options.second_review_file), indent=2))
+        else:
+            evaluate(options)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
 

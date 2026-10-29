@@ -6,11 +6,11 @@ import streamlit as st
 
 from app.facets import ENTITIES, LENSES
 from app.observatory_data import collections
-from app.storage import SORTS
+from app.storage import SORTS, library_filter_options
 
 DEFAULTS = dict(search='', collection='', publishers=[], sort='Newest saved', status='All articles',
                 published='Any time', date_from=None, date_until=None, length='Any length',
-                lens='', entity='', topics=[], tags=[], page_size=25)
+                lens='', entity='', topics=[], tags=[], page_size=25, ai_coverage=False)
 PERIODS = {'Past 30 days': 30, 'Past 90 days': 90, 'Past year': 365}
 LENGTHS = {'Any length': (None, None), 'Up to 5 min': (None, 1100),
            '6–15 min': (1101, 3300), 'Over 15 min': (3301, None)}
@@ -97,7 +97,9 @@ def render_controls(overview):
     names[''] = 'All collections'
     if st.session_state['library_collection'] not in names:
         st.session_state['library_collection'] = ''
-    for name, options in (('publishers', overview['publishers']), ('topics', overview['topics']), ('tags', overview.get('tags', {}))):
+    # Topic/tag validity belongs to the scoped query below, not the global
+    # overview's capped label list (which can omit a valid rare selection).
+    for name, options in (('publishers', overview['publishers']),):
         st.session_state['library_' + name] = [value for value in st.session_state['library_' + name] if value in options]
 
     def control(name):
@@ -114,7 +116,7 @@ def render_controls(overview):
             st.multiselect('Publishers', overview['publishers'], placeholder='All publishers', **control('publishers'))
         with sorting:
             st.selectbox('Sort articles', list(SORTS), **control('sort'))
-        with st.expander('More filters', icon=':material/tune:'):
+        with st.expander('General filters', icon=':material/tune:'):
             status, published, length = st.columns(3)
             with status:
                 st.selectbox('Analysis status', ['All articles', 'Analyzed', 'Needs analysis'], **control('status'))
@@ -128,23 +130,59 @@ def render_controls(overview):
                     st.date_input('Published from', value=None, format='DD/MM/YYYY', **control('date_from'))
                 with end:
                     st.date_input('Published until', value=None, format='DD/MM/YYYY', **control('date_until'))
-            lens, company, topics = st.columns(3)
-            with lens:
-                labels = {'': 'All coverage themes', **{item['id']: item['label'] for item in LENSES}}
-                st.selectbox('Coverage theme', list(labels), format_func=labels.get,
-                             help='Text mentions in saved articles, independent of AI summaries.', **control('lens'))
-            with company:
-                st.selectbox('Company mentioned', ['', *ENTITIES], format_func=lambda value: value or 'All companies', **control('entity'))
+            st.selectbox('Articles per page', [25, 50, 100], **control('page_size'))
+            st.caption('General filters apply to every topic. Date ranges exclude articles without a publication date.')
+
+        values = {name: st.session_state['library_' + name] for name in DEFAULTS}
+        base = build_filters(dict(values, topics=[], tags=[], lens='', entity=''))
+        if st.session_state.get('library_topic_scope') != base:
+            st.session_state['library_ai_coverage'] = False
+            st.session_state['library_lens'] = ''
+            st.session_state['library_entity'] = ''
+            st.session_state['library_topic_scope'] = base
+        options = library_filter_options(**base, retain_topics=st.session_state['library_topics'],
+                                         retain_tags=st.session_state['library_tags'])
+        for name in ('topics', 'tags'):
+            st.session_state['library_' + name] = [value for value in st.session_state['library_' + name] if value in options[name]]
+        st.session_state['library_tags'] = st.session_state['library_tags'][:20]
+        if st.session_state['library_lens'] not in options['lenses']:
+            st.session_state['library_lens'] = ''
+        if st.session_state['library_entity'] not in options['entities']:
+            st.session_state['library_entity'] = ''
+        with st.expander('Topic filters', icon=':material/filter_alt:'):
+            st.caption(f"Choices from all {options['total']:,} articles matching your general filters; {options['analyzed']:,} have current saved analyses.")
+            if len(options['topics']) == 100 or len(options['tags']) == 100:
+                st.caption('Up to 100 labels are shown, retaining valid selections. Narrow your search or collection to find less common labels.')
+            topics, tags = st.columns(2)
             with topics:
-                st.multiselect('Saved analysis topics', overview['topics'], placeholder='All saved topics',
-                               help='Matches topics in current saved AI analyses. Selecting several matches any of them.', **control('topics'))
-            tags, limit = st.columns([2, 1], vertical_alignment='bottom')
+                st.multiselect('Saved analysis topics', options['topics'], placeholder='Topics in matching articles',
+                               disabled=not options['topics'],
+                               help='Labels from current saved analyses in this search or collection. Selecting several matches any label.', **control('topics'))
             with tags:
-                st.multiselect('Personal tags', list(overview.get('tags', {})), format_func=overview.get('tags', {}).get,
-                               placeholder='All personal tags', help='Tags you saved in the reading room. Matches any selected tag.', **control('tags'))
-            with limit:
-                st.selectbox('Articles per page', [25, 50, 100], **control('page_size'))
-            st.caption('Filters combine. Publisher, topic and personal-tag selections match any selected value. Missing publication dates are excluded when a date range is applied.')
+                st.multiselect('Personal tags', list(options['tags']), format_func=options['tags'].get,
+                               max_selections=20,
+                               disabled=not options['tags'], placeholder='Tags in matching articles',
+                               help='Your saved tags in this search or collection. Matches any selected tag.', **control('tags'))
+            if not options['topics']:
+                st.caption('No saved analysis topics in this selection. Narrow the articles by keyword, or analyze them in Research to add topic labels.')
+            if options['lenses'] or options['entities']:
+                st.checkbox('Show AI investment filters',
+                            help='Optional AI investment keyword lenses and tracked companies. These are separate from the general topic labels above.', **control('ai_coverage'))
+            else:
+                st.session_state['library_ai_coverage'] = False
+            if st.session_state['library_ai_coverage']:
+                lens, company = st.columns(2)
+                with lens:
+                    labels = {'': 'All coverage themes', **{item['id']: item['label'] for item in LENSES if item['id'] in options['lenses']}}
+                    st.selectbox('AI investment coverage', list(labels), format_func=labels.get,
+                                 help='English keyword signals in matching saved articles; not sentiment or verified claims.', **control('lens'))
+                with company:
+                    st.selectbox('Tracked company mentioned', ['', *[name for name in ENTITIES if name in options['entities']]],
+                                 format_func=lambda value: value or 'All tracked companies', **control('entity'))
+            else:
+                st.session_state['library_lens'] = ''
+                st.session_state['library_entity'] = ''
+            st.caption('Topics and tags match any selected value within each control. Selections combine with your general filters.')
     values = {name: st.session_state['library_' + name] for name in DEFAULTS}
     remember_controls()
     return build_filters(values), values['sort'], values['page_size'], active_labels(values, names)

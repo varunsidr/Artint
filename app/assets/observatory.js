@@ -11,6 +11,8 @@ export default function (component) {
   root._filters = { ...data.filters, page: data.snapshot.page };
   root._view = data.snapshot;
   const view = data.snapshot;
+  const investment = view.mode === 'investment';
+  root.dataset.mode = view.mode;
   const abort = new AbortController();
   const frames = new Set();
   const timers = new Set();
@@ -21,6 +23,7 @@ export default function (component) {
   const focusToken = focused && root.contains(focused) ? {
     id: focused.id, lens: focused.dataset.lens, entity: focused.dataset.entity,
     month: focused.dataset.month, source: focused.dataset.source, matrix: focused.dataset.matrix,
+    topic: focused.dataset.topic, status: focused.dataset.status,
   } : null;
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -40,7 +43,8 @@ export default function (component) {
     const parsed = new Date(String(value).slice(0, 10) + 'T12:00:00Z');
     return Number.isNaN(parsed.valueOf()) ? 'Date unavailable' : parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
   };
-  const monthLabel = value => new Date(value + '-01T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  const monthLabel = value => new Date(value + (value.length === 10 ? '' : '-01') + 'T12:00:00Z').toLocaleDateString('en-GB',
+    value.length === 10 ? { day: 'numeric', month: 'short', timeZone: 'UTC' } : { month: 'short', year: '2-digit', timeZone: 'UTC' });
   const lensById = new Map(view.lenses.map(lens => [lens.id, lens]));
   const lensTones = { spending: 'blue', valuations: 'purple', returns: 'teal', credit: 'amber', capacity: 'clay', history: 'slate' };
   const lensColor = id => `var(--tone-${lensTones[id] || 'slate'})`;
@@ -160,11 +164,13 @@ export default function (component) {
   chooseOptions(q('#collection'), data.collections.map(row => ({ value: row.id, label: row.title + ' · ' + count(row.articles) })), root._filters.collection);
   chooseOptions(q('#publisher'), [{ value: '', label: 'All publishers' }, ...view.sources.map(source => ({ value: source, label: source }))], root._filters.source);
   q('#period').value = root._filters.period;
+  q('#analysis-mode').value = view.mode;
+  on(q('#analysis-mode'), 'change', event => commit({ mode: event.target.value, lens: '', entity: '', topic: '', status: 'All articles' }));
   const activeElement = root.getRootNode().activeElement || document.activeElement;
   if (activeElement !== q('#query')) q('#query').value = root._filters.query;
-  on(q('#collection'), 'change', event => commit({ collection: event.target.value, source: '', lens: '', entity: '', month: '', query: '' }));
+  on(q('#collection'), 'change', event => commit({ collection: event.target.value, source: '', lens: '', entity: '', month: '', day: '', topic: '', status: 'All articles', query: '' }));
   on(q('#publisher'), 'change', event => commit({ source: event.target.value }));
-  on(q('#period'), 'change', event => commit({ period: event.target.value, month: '' }));
+  on(q('#period'), 'change', event => commit({ period: event.target.value, month: '', day: '' }));
   let typing;
   on(q('#query'), 'input', event => {
     const value = event.target.value;
@@ -187,20 +193,27 @@ export default function (component) {
   const selectedCollection = data.collections.find(row => row.id === root._filters.collection);
   q('#collection-title').textContent = selectedCollection && selectedCollection.id ? selectedCollection.title : 'Your sources, connected.';
   const ranked = [...view.lenses].sort((a, b) => b.count - a.count);
-  q('#brief').textContent = view.stats.articles ?
+  q('#brief').textContent = view.stats.articles ? investment ?
     `${count(view.stats.articles)} articles from ${count(view.stats.publishers)} publishers. ${ranked[0].short} appears in ${count(ranked[0].count)} of them${ranked[1].count ? `; ${ranked[1].short.toLowerCase()} in ${count(ranked[1].count)}` : ''}. Explore a lens or company to inspect the sources behind those counts.` :
+    `${count(view.stats.articles)} articles from ${count(view.stats.publishers)} publishers. ${count(view.stats.analyzed)} have a current saved analysis; ${count(view.stats.articles - view.stats.analyzed)} are waiting for analysis. Explore publication activity, topics and publishers to focus the sources.` :
     'No articles match this selection. Clear a filter or try a broader search.';
   counter('#metric-articles', view.stats.articles);
   counter('#metric-publishers', view.stats.publishers);
-  counter('#metric-bubble', view.stats.bubble);
+  counter('#metric-bubble', investment ? view.stats.bubble : view.stats.analyzed);
+  q('#metric-third-label').textContent = investment ? 'Bubble language' : 'Analyzed articles';
+  q('#metric-third-note').textContent = investment ? 'Articles mentioning the debate' : 'Current saved analyses · qwen3:8b';
   q('#metric-articles-note').textContent = selectedCollection ? 'of ' + count(selectedCollection.articles) + ' in this collection' : '';
-  q('#scope-status').textContent = `${count(view.stats.indexed)} sources with inspectable coverage signals`;
+  q('#scope-status').textContent = investment ? `${count(view.stats.indexed)} sources with inspectable coverage signals` : 'Saved-source analytics · no model call required';
   q('#date-span').textContent = view.stats.earliest ? `${date(view.stats.earliest)} – ${date(view.stats.latest)}` : 'No dated sources';
   const audit = view.audit;
-  const noteParagraphs = [
+  const noteParagraphs = investment ? [
     'Counts describe mentions in saved titles and article text. An article can cover several lenses. Company and product aliases are grouped; a mention does not imply an investment, financing link, endorsement, or verified claim.',
     'The two passage cards show matched concerns and counterarguments. They are not classifications of an author’s overall position. Open the reading copy to inspect the surrounding text.',
     `${count(view.stats.undated)} articles in this selection have no usable publication date. Dates are extracted from publisher metadata and can be approximate. Timeline clicks and the other controls filter the evidence list together.`,
+  ] : [
+    'General analytics applies to any topic or language. Counts describe the selected saved sources, not all reporting on a subject. Publisher labels and publication dates come from saved metadata and may need review.',
+    `Topics are model-generated labels from current saved qwen3:8b analyses. Up to 8 labels are shown; labels may overlap and are not verified facts. ${count(view.stats.articles - view.stats.analyzed)} articles in this view have no current analysis and contribute no topic labels.`,
+    `${count(view.stats.undated)} articles have no usable publication date and are excluded from the timeline. Short date ranges use daily counts; longer ranges show up to the latest 60 months, including empty months. Reading times are estimates at 220 words per minute.`,
   ];
   if (audit) {
     const summary = audit.summary || {}, statuses = summary.statuses || {};
@@ -208,6 +221,36 @@ export default function (component) {
     noteParagraphs.push('The collection includes news, commentary, institutional analysis, and public research abstracts. Candidates were shuffled across website hosts, with a maximum of five per host. This is a research sample, not a representative market-wide sentiment survey. Extraction completeness is not guaranteed.');
   }
   notes.replaceChildren(...noteParagraphs.map(text => make('p', '', text)));
+  q('#lenses').hidden = !investment;
+  q('#topics').hidden = investment;
+  q('#investment-panel').hidden = !investment;
+  q('#general-panel').hidden = investment;
+  q('#evidence-heading').hidden = !investment;
+  q('#arguments').hidden = !investment;
+  q('#topics-heading').textContent = investment ? 'What the stories examine' : 'Topics in this collection';
+  q('#topics-note').textContent = investment ? 'Each article can match more than one lens' : 'Top saved labels · select a topic to explore';
+  q('#final-note').textContent = investment ? 'AI investment coverage describes keyword mentions in the saved sources. It does not establish whether an AI bubble exists.' : 'Counts describe your saved sources, not all reporting on a topic. Open Research for summaries and answers with cited evidence.';
+
+  const topicNodes = view.topics.map((topic, index) => {
+    const button = make('button', 'obs-lens'); button.dataset.topic = topic.name;
+    button.style.setProperty('--lens-color', `var(--tone-${['blue', 'purple', 'teal', 'amber', 'clay', 'slate'][index % 6]})`);
+    button.setAttribute('aria-pressed', String(root._filters.topic === topic.name));
+    button.setAttribute('aria-label', topic.name + ': ' + count(topic.count) + ' articles');
+    const label = make('span', 'obs-lens-label'); label.append(make('span', '', topic.name), make('b', '', count(topic.count)));
+    const track = make('div', 'obs-track'), fill = make('i'); fill.style.transform = `scaleX(${topic.count / Math.max(1, view.stats.articles)})`; track.append(fill);
+    button.append(label, track); return button;
+  });
+  if (!topicNodes.length) topicNodes.push(make('p', 'obs-topic-empty', view.stats.articles ? 'No saved topic labels in this selection yet. Analyze articles in Research to see their topics here. Publication and publisher analytics are already available.' : 'No topic labels match these filters. Clear a filter to return to the collection.'));
+  q('#topics').replaceChildren(...topicNodes);
+  q('#analysis-status').replaceChildren(...[['Analyzed', view.stats.analyzed], ['Needs analysis', view.stats.articles - view.stats.analyzed]].map(([label, amount]) => {
+    const button = make('button', 'obs-button', label + ' · ' + count(amount));
+    button.dataset.status = label; button.setAttribute('aria-pressed', String(root._filters.status === label)); return button;
+  }));
+  q('#reading-profile').replaceChildren(...[['Up to 5 min', view.stats.short_reads], ['5–15 min', view.stats.medium_reads], ['Over 15 min', view.stats.long_reads]].map(([label, amount]) => {
+    const row = make('div'), heading = make('div', 'obs-publisher-label'); heading.append(make('span', '', label), make('span', '', count(amount)));
+    const track = make('div', 'obs-track'), fill = make('i'); fill.style.transform = `scaleX(${amount / Math.max(1, view.stats.articles)})`; track.append(fill); row.append(heading, track); return row;
+  }));
+  q('#reading-note').textContent = `${count(view.stats.words)} extracted words · ${count(Math.ceil(view.stats.words / 220))} estimated reading minutes · ${count(view.stats.undated)} undated articles`;
 
   const chips = [];
   const addChip = (key, label) => {
@@ -219,8 +262,11 @@ export default function (component) {
   };
   addChip('lens', lensById.get(root._filters.lens)?.short || root._filters.lens);
   addChip('entity', root._filters.entity);
+  addChip('topic', root._filters.topic);
+  if (root._filters.status !== 'All articles') addChip('status', root._filters.status);
   addChip('source', root._filters.source);
   addChip('month', root._filters.month ? monthLabel(root._filters.month) : '');
+  addChip('day', root._filters.day ? date(root._filters.day) : '');
   addChip('query', 'Search: ' + root._filters.query);
   if (root._filters.period !== 'all') {
     const button = make('button', 'obs-filter-chip', root._filters.period === '90d' ? 'Past 90 days ×' : 'Past 12 months ×');
@@ -253,16 +299,16 @@ export default function (component) {
   reconcile(q('#lenses'), lensNodes);
 
   const renderTimeline = () => {
-    const container = q('#timeline'), values = root._view.timeline;
+    const container = q('#timeline'), values = root._view.timeline.map(row => ({...row, month: row.day || row.month}));
     if (!values.length) { container.replaceChildren(make('div', 'obs-empty-chart', 'No dated articles in this selection')); return; }
-    const width = Math.max(260, container.clientWidth), height = 210, left = 27, right = 12, top = 18, baseline = 175;
-    const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': 'Article count by publication month' });
+    const width = Math.max(260, container.clientWidth), height = 210, left = 42, right = 12, top = 18, baseline = 175;
+    const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': 'Article count by publication ' + view.timeline_granularity });
     const high = Math.max(...values.map(value => value.count), 1);
-    for (const fraction of high > 1 ? [0, .5, 1] : [0, 1]) {
-      const y = baseline - fraction * (baseline - top);
+    for (const value of new Set([0, Math.ceil(high / 2), high])) {
+      const y = baseline - value / high * (baseline - top);
       chart.appendChild(svg('line', { x1: left, x2: width - right, y1: y, y2: y, class: 'grid-line' }));
       const text = svg('text', { x: left - 8, y: y + 3, 'text-anchor': 'end' });
-      text.textContent = count(Math.round(high * fraction)); chart.appendChild(text);
+      text.textContent = count(value); chart.appendChild(text);
     }
     const area = svg('path', { class: 'volume-area' }), line = svg('path', { class: 'volume-line' });
     chart.append(area, line);
@@ -273,17 +319,17 @@ export default function (component) {
     const dots = [], focusRings = [];
     target.forEach((point, index) => {
       const group = svg('g', { role: 'button', tabindex: 0, 'data-month': point.month,
-        'aria-label': `${monthLabel(point.month)}: ${count(point.count)} articles`, 'aria-pressed': String(root._filters.month === point.month) });
+        'aria-label': `${monthLabel(point.month)}: ${count(point.count)} articles`, 'aria-pressed': String((root._filters.day || root._filters.month) === point.month) });
       group.appendChild(svg('rect', { class: 'month-hit', x: point.x - Math.max(10, step / 2), y: top, width: Math.max(20, step), height: baseline - top + 10 }));
       // Keep the generous column hit area, but draw keyboard focus around the
       // data point rather than the browser's full-height SVG group outline.
       const focusRing = svg('circle', { class: 'month-focus-ring', cx: point.x, cy: baseline, r: 9, 'aria-hidden': 'true' });
       const dot = svg('circle', { class: 'month-point', cx: point.x, cy: baseline, r: 3 });
       group.append(focusRing, dot); dots.push(dot); focusRings.push(focusRing);
-      describe(group, { label: new Date(point.month + '-01T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+      describe(group, { label: point.month.length === 10 ? date(point.month) : new Date(point.month + '-01T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
         value: `${count(point.count)} ${point.count === 1 ? 'article' : 'articles'}`,
-        detail: `${percent(point.count)}% of the current selection was published this month.`,
-        hint: root._filters.month === point.month ? 'Click again to clear this month' : 'Click to filter this month' });
+        detail: `${percent(point.count)}% of the current selection was published this ${view.timeline_granularity}.`,
+        hint: (root._filters.day || root._filters.month) === point.month ? 'Click again to clear this date' : 'Click to filter this date' });
       chart.appendChild(group);
       const interval = Math.max(1, Math.ceil(values.length / Math.max(3, width / 85)));
       if (index % interval === 0 || index === target.length - 1) {
@@ -311,8 +357,10 @@ export default function (component) {
     const width = q('#timeline').clientWidth;
     if (width !== timelineWidth) { timelineWidth = width; renderTimeline(); }
   }); resize.observe(q('#timeline'));
-  q('#clear-month').hidden = !root._filters.month;
-  on(q('#clear-month'), 'click', () => commit({ month: '' }));
+  q('#timeline-note').textContent = `Publication ${view.timeline_granularity === 'day' ? 'days' : 'months'} in this selection`;
+  q('#timeline-hint').textContent = `Select a ${view.timeline_granularity} to focus the sources`;
+  q('#clear-month').hidden = !root._filters.month && !root._filters.day;
+  on(q('#clear-month'), 'click', () => commit({ month: '', day: '' }));
 
   root._matrixNodes ||= new Map();
   const grid = q('#matrix').querySelector('.obs-matrix') || make('div', 'obs-matrix');
@@ -397,9 +445,9 @@ export default function (component) {
     row.querySelector('.obs-row-meta').textContent = article.source + ' · ' + date(article.published);
     row.querySelector('.obs-row-title').textContent = article.title;
     row.querySelector('.obs-row-excerpt').textContent = article.excerpt;
-    row.querySelector('.obs-row-lenses').replaceChildren(...article.lenses.slice(0, 2).map(id => {
-      const tag = make('span', 'obs-row-tag', lensById.get(id)?.short || id);
-      tag.style.setProperty('--lens-color', lensColor(id)); return tag;
+    row.querySelector('.obs-row-lenses').replaceChildren(...(investment ? article.lenses : article.topics).slice(0, 2).map(id => {
+      const tag = make('span', 'obs-row-tag', investment ? lensById.get(id)?.short || id : id);
+      tag.style.setProperty('--lens-color', investment ? lensColor(id) : 'var(--tone-blue)'); return tag;
     }));
     return row;
   });
@@ -415,8 +463,12 @@ export default function (component) {
 
   const handleAction = target => {
     const clear = target.closest('[data-clear]');
-    if (clear) { commit({ [clear.dataset.clear]: clear.dataset.clear === 'period' ? 'all' : '' }); return; }
-    if (target.closest('[data-reset]')) { commit({ query: '', source: '', period: 'all', lens: '', entity: '', month: '' }); return; }
+    if (clear) { commit({ [clear.dataset.clear]: clear.dataset.clear === 'period' ? 'all' : clear.dataset.clear === 'status' ? 'All articles' : '' }); return; }
+    if (target.closest('[data-reset]')) { commit({ query: '', source: '', period: 'all', lens: '', entity: '', month: '', day: '', topic: '', status: 'All articles' }); return; }
+    const topic = target.closest('[data-topic]');
+    if (topic) { commit({ topic: root._filters.topic === topic.dataset.topic ? '' : topic.dataset.topic }); return; }
+    const status = target.closest('[data-status]');
+    if (status) { commit({ status: root._filters.status === status.dataset.status ? 'All articles' : status.dataset.status }); return; }
     const read = target.closest('[data-read]');
     if (read) { setTriggerValue('open_article', read.dataset.read); return; }
     const matrixCell = target.closest('[data-matrix]');
@@ -431,7 +483,10 @@ export default function (component) {
     const source = target.closest('[data-source]');
     if (source) { commit({ source: root._filters.source === source.dataset.source ? '' : source.dataset.source }); return; }
     const month = target.closest('[data-month]');
-    if (month) commit({ month: root._filters.month === month.dataset.month ? '' : month.dataset.month });
+    if (month) {
+      const key = month.dataset.month.length === 10 ? 'day' : 'month';
+      commit({ month: '', day: '', [key]: root._filters[key] === month.dataset.month ? '' : month.dataset.month });
+    }
   };
   on(root, 'click', event => handleAction(event.target));
   on(q('#timeline'), 'keydown', event => {
@@ -442,7 +497,7 @@ export default function (component) {
   if (focusToken && !focused.isConnected) {
     const replacement = [...root.querySelectorAll('button,[data-month]')].find(node => {
       if (focusToken.id) return node.id === focusToken.id;
-      return ['lens', 'entity', 'month', 'source', 'matrix'].every(key => node.dataset[key] === focusToken[key]);
+      return ['lens', 'entity', 'month', 'source', 'matrix', 'topic', 'status'].every(key => node.dataset[key] === focusToken[key]);
     });
     replacement?.focus({ preventScroll: true });
   }

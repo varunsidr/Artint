@@ -2,6 +2,50 @@
 
 Historical measurements and verification paths below refer to developer-local artifacts. `data/` and `output/` are excluded from the public repository. The reproducible public preview uses original synthetic fixtures; see [the README](README.md).
 
+Accepted execution order: A portability/clean installation -> B reviewed extraction/evaluation -> C evaluated persistent retrieval and saved research -> a small evidence-backed cross-publisher comparison -> qualitative pilot and justified integrations. Preserve an unchanged evaluation baseline before changing capture/retrieval/model behaviour. See the [detailed plan](docs/roadmap.md) for methodology and release gates.
+
+## Documentation preparation before push — 2026-10-29
+
+Updated the README, architecture, acceptance requirements, operating guide, roadmap, publishing instructions and validation record to distinguish current general analytics/research usability from planned evaluated retrieval. Added an [unreleased changelog](CHANGELOG.md) and refreshed the general-analytics screenshot from the original isolated 36-article synthetic demo, with no publisher/model calls. Corrected the legacy extraction-review instructions and initial-repository publishing steps. Runtime dependencies and schema version 6 are unchanged. No commit, push, tag, release or image publication is performed by this documentation update.
+
+## General analytics and research usability — 2026-10-29
+
+Status: implemented locally. Analytics now defaults to general collections and supports any topic: publication activity, publisher distribution, current default-model analysis coverage, saved topic labels, analysis-status filtering and reading profiles. Short spans use zero-filled daily bins; longer spans retain bounded monthly data. Topic/status/day filters share notebook/export membership. AI investment lenses, aliases, argument cards and bubble wording require the explicit specialist view. Missing saved topics are disclosed instead of replaced with investment labels. Analytics labels are at least 12px; source previews remove Markdown/image destinations without changing saved text.
+
+An empty reading-room analysis links directly to Research focused on the exact article, preserves existing filters and starts no automatic analysis. Offline/deleted articles are handled. Pagination uses compact Previous/page-jump/Next controls with a mobile-safe jump menu. Answer cards expose their cited source passages directly.
+
+Research batches embedding-cache reads (256 hashes per SELECT) and keeps the same embedding model loaded between 16-input batches, requesting unload after the final batch. Exact repeated questions may reuse the last session answer while mode/source revision/models/endpoint are unchanged, with a fresh-result bypass and visible retrieval/timing details. The model, generation budgets, input passages, cosine ranking and six-passage retrieval are preserved; persistent indexing, durable research sessions and reviewed answer-quality improvements remain Milestone C/M4 work.
+
+Verification: **231 tests passed, 1 opt-in live-server installation test skipped**, including actual browser extraction. Separate synthetic live-UI checks cover general/specialist mode changes, topics/status/day filters, CSV membership, readable labels, light/dark/mobile layouts, compact pagination and article handoff. All table hashes and **112 real article/PDF hashes** were preserved. Dependency and whitespace checks passed. New changes have not been pushed, released or revalidated on Docker/Linux.
+
+Developer-local performance evidence (`output/research-ux/`, excluded from Git): an alternating eight-repeat 2,000-vector cache lookup returned identical vectors with 2,000 SELECTs reduced to eight; median cache lookup was 93.7ms before and 20.8ms after. This is cache-only, not an overall model-speed claim. The existing public `scripts/benchmark_observatory.py` now measures general and specialist modes explicitly, with dense synthetic topic labels and an optional output filename. General SQL snapshot medians were 39.8ms for 1,000 seeded articles (917 matched date bounds) and 446.2ms for 10,000 (9,167 matched), over 15 rounds. Browser paint, network, PDF generation, model inference and concurrency are excluded. No fresh Qwen-answer or human-support benchmark was run; Milestone B's reviewed-quality gate remains open.
+
+## Context-aware filter correction — 2026-10-29
+
+Status: implemented and verified before Milestone B work. Library/Research split general and topic filters; scoped SQL derives current saved labels/tags from all matching articles rather than the global library or first page. Stale labels clear across topic/model/metadata changes, compatible values survive navigation, and unanalysed scopes show an explicit empty state. AI investment Library lenses/companies are opt-in and contextual. Discovery wording separates topic refinements from general controls.
+
+Verification checkpoint: 209 tests passed with the separate live-server test skipped; synthetic browser checks passed layoffs -> glass -> Library, dark/light themes, mobile width and absent-analysis states. The current 106-article library was hash-baselined separately from Milestone A. A fresh Docker rerun was not executed because its daemon was stopped; earlier A results remain historical evidence.
+
+## B — Reviewed extraction/provenance — tooling started 2026-10-29
+
+Status: review tooling implemented; human-reviewed quality gate remains open. Extended `scripts/evaluate_extraction.py` with prospective candidate/protocol freeze, exclusive phase/hash-bound review creation, reading-copy integrity checks, explicit eligibility/exclusion/failed-capture accounting, source-kind/host strata, descriptive Wilson intervals and second-review disagreement reporting. Existing phase results and the legacy checklist are preserved. No extraction heuristics were changed to chase scores.
+
+The current 100-source diagnostic cohort has 78 captures, 22 failures and **zero human-reviewed eligible cases**. Its new phase checklist has 100 pending rows, a null reviewed pass rate and a false gate. It remains a convenience sample; a new prospectively declared eligible cohort and actual human labels/double review are needed. See [review instructions](docs/extraction-evaluation.md).
+
+Combined verification: **220 tests passed, 1 opt-in live-server test skipped**; dependency checks pass. Synthetic browser checks confirm layoffs/glass scope changes, stale-selection repair, unavailable AI controls hidden, light/dark themes and mobile width. Rare labels remain selectable outside the global top-100 overview. All real-library table hashes and 106 PDF hashes are preserved. Docker revalidation remains not run while its daemon is stopped. Changes remain local.
+
+## A — Linux, Docker and clean-install reliability — 2026-10-29
+
+Status: local validation complete for Windows, Ubuntu 26.04 WSL2 x86_64 and the Debian/Python 3.13 Docker image. Expanded hosted CI and native AppArmor policy loading remain explicit release checks; native macOS, ARM64 and GPUs are not declared supported. See [commands and matrix](docs/validation.md).
+
+- Reused existing SQLite/PDF configuration, CLI, worker, extraction policy and optional Ollama. Retained schema version 6 and verified hashes for all original tables and 105 reading PDFs.
+- Added a digest-pinned Python/browser multi-stage image, recorded Linux runtime dependencies, deny-by-default Docker context, loopback-only Compose service and isolated persistent volumes. Runtime/test targets are separate.
+- Explicitly enabled Chromium sandboxing; verified namespace/PID/network/seccomp status. Kept non-root, dropped capabilities, no-new-privileges and read-only runtime while adding only the documented namespace-local `chroot` syscall allowance to the upstream profile.
+- Added read-only install diagnostics, isolated PDF/search/restore checks and disposable native/container live UI validation. Added Ubuntu and Docker CI definitions alongside Windows with pinned actions and a scoped Ubuntu AppArmor allowance rather than global policy disablement.
+- Results: Windows and fresh native Ubuntu each passed **203 tests with 1 opt-in live-server test skipped**, plus a separate passing live UI test. Docker passed **all 204 tests**, including real capture and live search/notes/PDF. Synthetic demo, force-recreation persistence, backup/restore, hard links and actual private-file context exclusions passed.
+- Documented install, optional model networking, explicit migration, recovery, clean removal, download/cache issues and supported versus unverified paths. No remote push, release or image publication was performed.
+- Next: the independently reviewed extraction/evaluation milestone. Installation tests establish no extraction or AI quality percentage.
+
 ## Public repository preparation — 2026-10-28
 
 - Added MIT licensing, a focused product README, detailed operating guide and local publishing instructions.
@@ -245,24 +289,33 @@ Status: planned.
 
 Scope: AI-01 through AI-04.
 
-- Create a reviewed set of at least 50 questions, including comparisons, conflicting sources, and unanswerable questions.
+- Deliver a versioned evaluation harness and unchanged baseline first. Original synthetic cases validate the harness without establishing model quality. Build a reviewed development set, then expand toward at least 200 held-out questions including 100 unanswerable cases, keeping story families and duplicates together across splits.
 - Add keyword/semantic hybrid retrieval, source diversity, and evaluation-driven reranking.
 - Add token-aware budgets and staged summaries for long articles.
 - Persist research history and export research briefs with evidence references.
 - Version model identity, prompts, chunking, and caches for reproducible evaluation.
 
-Exit targets: at least 95% of evaluated answer claims supported by their cited text; at least 90% correct abstention on the unanswerable subset. Report sample sizes, rubric, model, hardware, latency, and failures. Automated citation-ID validation alone cannot satisfy this gate.
+Exit targets: at least 95% of evaluated atomic answer claims supported by their cited text; at least 90% correct abstention on the unanswerable subset. Report actual question/claim denominators, answerable-case coverage, retrieval recall@5/@10, MRR@10, multi-evidence coverage, rubric, model, hardware, latency and failures. Human labels and adjudication, including a double-labelled subset, are required for quality claims. Use cluster-aware 95% confidence intervals; distinguish an observed target from one established by its lower confidence bound. Automated citation-ID validation or model self-grading alone cannot satisfy this gate. Preserve immutable session evidence with explicit retention/purge semantics and a versioned portable backup contract.
+
+## M4.1 — Evidence-backed cross-publisher comparison
+
+Status: proposed; depends on evaluated retrieval and saved sessions.
+
+Scope: AI-05. Begin with 2-5 user-selected articles about one event. Extract attributed claims with exact source spans, units, periods and qualifiers; present a source-by-claim comparison with inspectable evidence. Distinguish possible conflict, different measurements and insufficient evidence. Retain capture warnings and document revisions. Automatic story grouping, truth/bias labels and multilingual quality claims require separate evaluation.
+
+Exit: report human-reviewed claim support, relationship precision/recall and false-conflict errors. Comparisons remain experimental until their gates pass and are included in the session/export/backup contract.
 
 ## M5 — Responsive, installable local beta
 
 Status: in progress. Bounded browsing/analytics/exports, backed-up schema migrations, portable merge restore and deletion recovery, isolated 1,000/10,000-record measurements, and persistent selected-discovery import batches with leases/progress/cancellation are delivered. Generalized ingestion/analysis/index jobs, automatic retry policies, persistent semantic passage indexing, broader cross-process recovery, automated release checks, and clean-install validation remain planned.
 
-Scope: OPS-01 through OPS-03 and DEV-01 through DEV-03.
+Scope: OPS-01 through OPS-04 and DEV-01 through DEV-03. Portable installation proceeds after the baseline and before the external pilot; human evaluation labelling can continue alongside it.
 
 - Durable local jobs with progress, cancellation, bounded retries, and restart recovery.
 - Persistent passage indexing; bounded database reads and on-demand ZIP generation.
 - Versioned database migrations and tested backup/restore.
 - Automated checks and a clean-install guide using a reproducible dependency snapshot.
+- Windows/Ubuntu/macOS CI and declared fresh-install environments; Docker/compose with persistent volumes and optional Ollama. Verify actual restart/restore behaviour and filesystem assumptions. Validate GPU paths separately.
 - Record performance on a 1,000-article library and declared reference hardware.
 
 Exit targets: warm keyword search p95 below one second; library first page below two seconds; fetching and model generation do not block library browsing. Model latency is measured separately from application overhead. Validate installation on the declared supported Python/OS combinations before claiming support.
@@ -272,10 +325,10 @@ Exit targets: warm keyword search p95 below one second; library first page below
 Status: planned; choose the initial audience before recruitment.
 
 - Observe at least five target users completing capture -> organize -> research -> export.
-- Run a two-week pilot; document repeat usage, time saved, missing capabilities, and willingness to pay.
+- Run a two-week qualitative pilot after portable installation and saved-session workflows pass; document setup failures, task completion, citation errors, repeat usage, missing capabilities and user explanations. Report time comparisons only with a declared comparable-task method.
 - Use the results to choose integrations, monitoring features, and pricing experiments.
 
-Exit: at least three of five participants use the tool on multiple days in week two, and the next product decision is backed by observed workflows. This is a learning gate, not proof of market fit.
+Exit: document the observed workflows, failure points and the next product decision they justify. Return use in a five-person cohort is qualitative evidence, not a statistically established retention rate or proof of market fit. Choose capture integrations and monitoring features from these findings.
 
 ## Optional hosted release
 

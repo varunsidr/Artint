@@ -1,12 +1,22 @@
 # Architecture
 
-Updated: 2026-10-28. Scope: local, single-user research application.
+Updated: 2026-10-29. Scope: local, single-user research application.
 
 ## Current system
 
+Analytics defaults to a general collection view rather than an AI-bubble collection or investment taxonomy. The existing revision-cached SQL snapshot computes current-analysis coverage, distinct-source topic counts, word/reading-length totals, publishers and bounded publication activity. Date spans of at most 45 days use zero-filled daily bins; longer spans retain at most 60 zero-filled months. Topic/status/day filters share the list/export predicates. Investment lenses, company aliases and concern/countercase excerpts are computed only in the explicit specialist view. General mode displays no investment tags or argument cards. Topic labels come from current default-model analyses, not new model calls or assumed topic classifications.
+
+An empty reading-room Analysis tab hands one article ID to a focused Research view, preserving unrelated Library/Research filters. Missing/deleted sources and offline models produce actionable states; navigation starts no model job. Shared pagination uses a compact Previous/page-jump/Next group that wraps on small screens. A bounded Markdown-to-text preview removes image references and destinations without changing stored text, PDFs or extraction fingerprints.
+
+Embedding cache reads batch up to 256 hashes per SQL statement. The embedding model stays loaded for up to one minute between 16-input batches; the final batch requests unload before chat generation. Inputs, vector values, cosine ranking, six-passage retrieval and generation budgets remain unchanged. Research reports reuse/creation counts and elapsed time. Only the last identical question/mode/source-revision/model/endpoint result may be reused in session memory, with an explicit fresh-result bypass; this is not durable saved research or an answer-quality evaluation.
+
 The public repository contains application code, tests, documentation and original synthetic demo fixtures. Runtime libraries, publisher captures, PDFs, evaluation caches and backups live under ignored `data/` and `output/` directories. `scripts/seed_demo.py` creates a separate demo library in a new or empty destination, without fetching sources or running a model; its storage overrides are restored when the generator finishes. Public screenshots come from that isolated library.
 
-The GitHub Actions workflow targets Windows/Python 3.13, installs Chromium and runs deterministic tests plus demo generation. This is automated validation of the local application, not a deployment workflow or evidence of hosted multi-user readiness. Direct dependencies are pinned; action revisions are pinned to release commits.
+The GitHub Actions workflow defines Windows/Python 3.13, Ubuntu/Python 3.13 and disposable Docker validation. The expanded jobs await an authorized push; local results are recorded in [validation](docs/validation.md). This is application validation, not deployment or evidence of hosted multi-user readiness. Direct dependencies and the Linux runtime resolution are pinned; action revisions and Python/browser image manifests are pinned to release commits/digests.
+
+The runtime image keeps the existing Streamlit/services/SQLite architecture. `ARTICLE_LIBRARY_DB` and `ARTICLE_PDF_DIR` point at two isolated named volumes. Compose publishes only host loopback, runs UID 10001 with all host capabilities dropped, read-only rootfs, no-new-privileges and the documented seccomp profile. Chromium assets match the Python Playwright version; the launcher explicitly enables sandboxing and never falls back without it. A marked profile rule permits namespace-local `chroot` without granting the corresponding host capability. Native URL/robots/redirect/resource policies are unchanged. Schema version 6 is retained; no storage migration was needed for packaging.
+
+Read-only installation diagnostics, an isolated search/PDF/restore smoke, disposable native server validation and a random-project container validator reuse existing services. They introduce no alternate CLI persistence layer or job queue. The container validator checks port bindings/volume ownership, actual browser sandbox status, recreation persistence and live UI/PDF behaviour, then removes only its own test project. The Docker test target includes existing evaluator fixtures; development packages/test data do not enter the runtime image.
 
 ```mermaid
 flowchart TD
@@ -43,11 +53,12 @@ The dashboard and CLI call Python service functions directly. Ingestion fetches 
 | `app/theme.py` | Semantic light/dark palettes, session-scoped appearance, URL restoration, and chart colors |
 | `app/library_view.py` | Indexed keyword/publisher/status queries, bounded article pages, reading dialog, and export controls |
 | `app/library_filters.py` | Full-width library controls, durable filter values, shared query/export predicates, date and reading-length semantics |
+| `app/text_preview.py` | Bounded plain-text previews for Library/Analytics; removes image/destination markup without fetching resources or modifying source copies |
 | `app/library_actions.py` | Personal annotations, normalized tags, collection editing, source anchors, managed file policy and journaled single-article deletion |
 | `app/annotation_view.py` | Reader note/tag/project forms, highlight creation/editing, bounded highlight pages and outdated-anchor notices |
 | `app/library_backup.py`, `app/backup_view.py` | Versioned portable JSON/ZIP snapshots, strict archive validation, merge preview and non-overwriting restore |
 | `app/analytics_view.py`, `app/observatory_view.py` | Analytics routing, revision-keyed snapshot cache, trusted v2 component registration, reading/export actions |
-| `app/observatory_data.py` | Shared collection/filter semantics, SQL counts/co-mentions, bounded evidence and source pages |
+| `app/observatory_data.py` | General topic/status/reading-profile aggregates and daily/monthly activity; optional investment co-mentions/evidence; matching bounded source/export scope |
 | `app/facets.py` | Versioned, inspectable English lens/company/passage matching; no sentiment or fact-check claims |
 | `app/assets/observatory.*` | Static trusted markup, palette-aware CSS, responsive SVG, linked controls, cancellable animation and reduced motion |
 | `app/exports.py` | Metadata-only CSV streaming into a bounded buffer and current-page PDF ZIP limits |
@@ -90,7 +101,8 @@ PDF content uses a CommonMark parser with the table extension. Only renderer-gen
 
 - Manual URL ingestion and model analysis can hold the active Streamlit interaction until completion. Explicitly selected discovery imports run in the background.
 - Library pages return at most 100 metadata/excerpt/insight rows (25 by default). SQLite computes totals, matching counts, and up to 100 common topic labels. Publisher choices are metadata only. Sorting and filters run in SQL with stable ID tie-breakers. OFFSET pagination and aggregate scans still grow with collection size; 10,000 synthetic articles were measured, not unlimited scale.
-- Analytics applies the same collection/keyword/date/publisher/lens/company/month predicates to counts, co-mentions, evidence, source rows, and CSV. It returns six lenses, at most 60 contiguous calendar months (zero counts included), seven displayed company rows, eight displayed publishers, two matched passages per argument type, and 12 source rows per page. Publisher controls list all labels in the collection. Counts may overlap across lenses; co-mentions do not establish financial links. The UI uses no whole-article payloads until a reading copy is requested.
+- Library/Analytics plain-text previews parse at most 2,400 source characters per row and return at most 240 characters, including any ellipsis. Reading copies and PDF/source fingerprints retain the original saved text.
+- Analytics applies the same collection/keyword/date/publisher/topic/status/day/month predicates to general totals, charts, source rows and CSV. The explicit investment view adds lens/company filtering, six lenses, seven displayed company rows and two passages per argument type. General mode shows at most eight topic labels; both modes show eight publisher bars, 12 source rows, at most 46 daily bins or 60 monthly bins including zeros. Publisher controls list all labels in the collection. Topic/lens counts can overlap; co-mentions do not establish financial links. Previews use at most 2,400 source characters per row, without whole-article payloads.
 - Semantic search still reconstructs passages, reads JSON vectors, and scores every passage in its scope; it returns at most six passages. Research browsing is paginated and questions are explicitly limited to the shown/selected sources, at most 100 articles. Whole-library semantic retrieval and background indexing remain M4/M5 work.
 - Summaries analyze a prefix of up to 18,000 source-text characters; omitted passages are labeled as partial coverage.
 - Citation validation checks passage identity and response shape, not whether each assertion is supported.
@@ -232,6 +244,12 @@ Selected imports create or extend a named collection for the same topic query. A
 
 A two-second Streamlit fragment polls up to five recent batches. A stop request completes the current article and marks remaining queued items cancelled. Batch metadata survives page navigation and process restart; recovery can wait up to the lease interval. Jobs are local and single-user; a full scheduler, automatic bounded retry policy, analysis/index jobs, multiple-user ownership and release-grade restore remain M5 work. `ARTICLE_LIBRARY_DB` plus `ARTICLE_PDF_DIR` isolate both database and generated PDFs for live browser QA.
 
+## Contextual filters and review tooling
+
+Filter option queries reuse `_library_query` for current model/version/content hash, collection, keyword and metadata predicates. They aggregate bounded topic/tag/coverage choices over all matching IDs without loading article bodies into the UI. Topic/tag selections are omitted only when deriving their own alternatives; result/export predicates include them. Research and Library prune stale values and retain compatible controls across navigation. AI investment-specific Library filters are opt-in and remain separately labelled.
+
+The existing extraction evaluator now supports protocol-backed candidate manifests and a separate phase-bound review workflow. It verifies manifest/configuration, source metadata/body hashes and available reading-copy bytes before counting labels. Existing capture phases and legacy checklists remain intact; review summaries are separate metadata artifacts. Pending/excluded/failed cases remain visible, second-review disagreements block the cohort gate, and descriptive binomial intervals are explicitly not publisher-cluster-aware or evidence of general-web quality.
+
 ## Planned evolution
 
 The workspace now defaults to a searchable Library, with separate Analytics, Research, Search articles and Import views. Model discovery is deferred until Research opens. Saved summaries are available both in Research and in each article's reading dialog. The reading renderer uses HTML-disabled CommonMark rather than Streamlit math parsing, preserves extracted paragraph breaks, and disables image rendering to avoid external image requests. Native Streamlit controls retain keyboard interactions; CSS targets stable test IDs and named containers rather than generated class hashes.
@@ -256,6 +274,16 @@ Keep Streamlit and SQLite through the local beta. Introduce the following bounda
 Choose job-runner and indexing implementations when their milestones begin; do not add an external queue or server database before the measured workload needs them.
 
 The component explicitly disposes the previous render before attaching new handlers, and also returns its disposer for unmount. This avoids duplicate event handlers when the renderer updates the same DOM: one click or Enter/Space activation must produce one filter update. Timeline SVG hit targets keep their generous column area, suppress the browser's full-height focus outline, and draw a small visible ring around the point for keyboard users. Chart hover cards replace native SVG titles and matrix `title` attributes. They use safe text insertion, current filtered counts/percentages, root-relative positioning clamped to the available width, scroll repositioning, and Escape dismissal even when focus is outside the shadow root. Theme-specific panel and category colors provide separation while labels and numeric values remain available independently of color. Palette tests cover normal text and 3:1 chart-mark contrast against panel surfaces.
+
+## Proposed next-release boundaries
+
+The [next-release plan](docs/roadmap.md) is a proposal, not a description of delivered capabilities. First add a versioned evaluation contract and baseline adapter around the existing pipeline. Gold evidence references source revisions and text offsets, independent of the current chunk IDs. Human review, grouped uncertainty estimates and held-out story families are required for research-quality claims.
+
+Then add persistent revision-aware passages, passage-level FTS and measured semantic candidates with reciprocal rank fusion. A portable vector baseline remains valid until another backend earns its installation/performance cost. Reranking is a separate evaluated experiment. The UI receives an inspectable retrieval trace; scores do not represent truth probabilities.
+
+Saved sessions retain model/retrieval configuration and immutable quoted evidence, with explicit source-deletion and evidence-purge semantics. Session backups require a new versioned portable contract. Claim comparisons build on this evidence layer and initially operate on user-selected story groups; source-attributed statements and possible relationships are distinct from truth or bias judgements.
+
+Portable installation validates the existing single-user boundary on declared Windows/Linux/macOS environments and through a local Docker path. The app remains useful without a model; compose may add an optional Ollama service. Filesystem/restore, native-host networking and GPU support need their own checks. Introduce a narrow model-client interface when evaluation/indexing needs it; additional providers, read-only MCP and public hosting are later choices.
 
 ## Trust and deployment boundaries
 

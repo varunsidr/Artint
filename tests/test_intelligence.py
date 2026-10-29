@@ -152,3 +152,64 @@ def test_invalid_question_never_calls_model(article):
         with pytest.raises(IntelligenceError):
             semantic_search(question, [article], 'embedding', client)
     client.embed.assert_not_called()
+
+
+def test_multiple_embedding_batches_stay_warm_then_release_and_preserve_ranking(article):
+    import math
+    articles = [dict(article, id=str(index), text=f'Unique source {index}.') for index in range(36)]
+    query = 'Instruct: Retrieve article passages relevant to the question.\nQuery: evidence'
+    inputs = [item['title'] + '\n' + article_passages(item)[0]['text'] for item in articles] + [query]
+    vectors = {text: [1.0, float(index + 1)] for index, text in enumerate(inputs)}
+    client = Mock()
+    client.embed.side_effect = lambda model, texts, **kwargs: [vectors[text] for text in texts]
+    stats = {}
+    result = semantic_search('evidence', articles, 'embedding', client, stats=stats)
+    assert [call.kwargs['keep_alive'] for call in client.embed.call_args_list] == ['1m', '1m', 0]
+    # Compare against the unchanged baseline formula, independently of cache batching.
+    q = vectors[query]
+    expected = sorted(zip(articles, inputs[:-1]), key=lambda pair: sum(a*b for a, b in zip(vectors[pair[1]], q))
+                      / math.sqrt(sum(x*x for x in vectors[pair[1]]) * sum(x*x for x in q)), reverse=True)[:6]
+    assert [p['article_id'] for p in result] == [item['id'] for item, _ in expected]
+    assert stats['embeddings_created'] == 37 and stats['embedding_batches'] == 3
+    assert stats['passages_searched'] == 36
+    client.embed.reset_mock()
+    warm = {}
+    assert semantic_search('evidence', articles, 'embedding', client, stats=warm) == result
+    client.embed.assert_not_called()
+    assert warm['embeddings_reused'] == 37 and warm['embeddings_created'] == 0
+
+
+def test_embedding_cache_reads_are_bounded_and_keep_model_isolation(monkeypatch):
+    from contextlib import contextmanager
+    values = {f'passage {index}': [float(index), 1.0] for index in range(700)}
+    storage.save_embeddings('primary', values)
+    storage.save_embeddings('other', {'passage 0': [-1.0, 9.0]})
+    statements = []
+    original = storage.connect
+    @contextmanager
+    def traced():
+        with original() as con:
+            con.set_trace_callback(statements.append)
+            yield con
+    monkeypatch.setattr(storage, 'connect', traced)
+    assert storage.cached_embeddings('primary', [*values, 'missing', 'passage 0']) == values
+    reads = [sql for sql in statements if 'FROM embeddings' in sql]
+    assert len(reads) == 3
+    assert storage.cached_embeddings('other', ['passage 0']) == {'passage 0': [-1.0, 9.0]}
+    statements.clear()
+    assert storage.cached_embeddings('primary', []) == {} and not statements
+
+
+def test_intermediate_embedding_failure_does_not_cache_missing_vectors(article):
+    articles = [dict(article, id=str(index), text=f'Unique source {index}.') for index in range(32)]
+    client = Mock()
+    client.embed.side_effect = [ [[1.0, 1.0]] * 16, IntelligenceError('interrupted') ]
+    with pytest.raises(IntelligenceError, match='interrupted'):
+        semantic_search('evidence', articles, 'embedding', client)
+    # Resume completes only missing batches and retains the same ranking inputs.
+    client.embed.reset_mock(side_effect=True)
+    client.embed.side_effect = lambda model, texts, **kwargs: [[1.0, 1.0]] * len(texts)
+    stats = {}
+    semantic_search('evidence', articles, 'embedding', client, stats=stats)
+    assert stats['embeddings_reused'] == 16 and stats['embeddings_created'] == 17
+    assert client.embed.call_args_list[-1].kwargs['keep_alive'] == 0

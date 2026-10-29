@@ -33,6 +33,13 @@ def apply_styles():
 
 def navigate(view):
     st.session_state['workspace_view'] = view
+    if view != 'Research':
+        st.session_state.pop('research_focus_article', None)
+
+
+def open_article_research(article_id):
+    navigate('Research')
+    st.session_state['research_focus_article'] = article_id
 
 
 def publisher(article):
@@ -127,18 +134,18 @@ def _choose_page(key):
 
 def pagination(result, key):
     st.session_state[key + '_page'] = result['page']
-    previous, position, following = st.columns([1, 2.4, 1], vertical_alignment='center')
-    with previous:
-        st.button('Previous', key=key + '_previous', icon=':material/chevron_left:',
-                  disabled=result['page'] <= 1, on_click=_step_page, args=(key, -1))
-    with position:
-        if result['pages'] > 1:
-            st.session_state[key + '_page_input'] = result['page']
-            st.number_input('Page', min_value=1, max_value=result['pages'], step=1,
-                            key=key + '_page_input', on_change=_choose_page, args=(key,))
+    with st.container(key=key + '_pagination', horizontal=True, vertical_alignment='center', gap='small'):
         start = (result['page'] - 1) * result['page_size'] + 1 if result['total'] else 0
         end = min(result['page'] * result['page_size'], result['total'])
-        st.caption(f'{start:,}–{end:,} of {result["total"]:,} articles · Page {result["page"]:,} of {result["pages"]:,}')
-    with following:
-        st.button('Next', key=key + '_next', icon=':material/chevron_right:',
-                  disabled=result['page'] >= result['pages'], on_click=_step_page, args=(key, 1))
+        with st.container(width='stretch'):
+            st.caption(f'{start:,}–{end:,} of {result["total"]:,} articles')
+        if result['pages'] > 1:
+            with st.container(horizontal=True, width='content', vertical_alignment='center', gap='small'):
+                st.button('Previous', key=key + '_previous', icon=':material/chevron_left:',
+                          disabled=result['page'] <= 1, on_click=_step_page, args=(key, -1))
+                with st.popover(f'{result["page"]:,} / {result["pages"]:,}', help='Go to a page'):
+                    st.session_state[key + '_page_input'] = result['page']
+                    st.number_input('Go to page', min_value=1, max_value=result['pages'], step=1,
+                                    key=key + '_page_input', on_change=_choose_page, args=(key,))
+                st.button('Next', key=key + '_next', icon=':material/chevron_right:',
+                          disabled=result['page'] >= result['pages'], on_click=_step_page, args=(key, 1))

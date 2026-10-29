@@ -21,9 +21,7 @@ criteria, and current limitations. Benchmark targets in those documents are not 
 
 ## Windows / VS Code quickstart
 
-The current development environment is Windows with Python 3.13. Other Python/OS combinations
-need clean-install validation before they are declared supported. Open this project folder in
-VS Code, then open a PowerShell terminal:
+The checked native environments are Windows and Ubuntu/WSL2 x86_64 with Python 3.13. Docker packaging is also checked. See [installation](installation.md) and [validation](validation.md) for exact support boundaries and pending hosted CI checks. Open this project folder in VS Code, then open a PowerShell terminal:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -35,7 +33,19 @@ streamlit run app/dashboard.py
 
 If PowerShell activation is restricted, run `.\.venv\Scripts\python.exe -m streamlit run app/dashboard.py` instead.
 
-Linux/macOS: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && streamlit run app/dashboard.py`.
+Linux/Bash, with Python 3.13 installed separately from the operating system Python:
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m playwright install --with-deps chromium
+.venv/bin/python scripts/check_install.py --browser
+.venv/bin/python -m streamlit run app/dashboard.py
+```
+
+Docker Compose: `docker compose up --build -d --wait`, then open http://127.0.0.1:8501. It uses separate persistent library/PDF volumes and publishes only on host loopback. Native files are migrated only by an explicit portable-backup restore. See [installation and recovery](installation.md) for volume ownership, removal without erasing data, optional host Ollama, sandbox requirements, spare ports and the container demo. Native macOS and ARM64 remain unvalidated.
+
+`python scripts/check_install.py` is read-only; add `--browser` to test sandboxed Chromium. `python scripts/smoke_install.py` uses temporary synthetic storage to check search, PDF export and portable restore. Use the Python executable from your environment. The UI remains useful without Ollama.
 
 Open the local Streamlit URL (usually `http://localhost:8501`). Paste public article URLs, one per line. Each successful extraction creates `output/pdfs/<article_id>.pdf` and persists metadata/content to `data/articles.db`.
 
@@ -70,12 +80,13 @@ The sidebar opens five focused views: **Library**, **Analytics**, **Research**, 
 Library is the default view. Search saved text, filter your sources, sort articles, then choose **Read**
 for the reading room with article text, saved analysis, original source, and PDF download.
 The full-width toolbar provides search, collection, multiple publishers, and sorting by saved/publication
-date, title, or reading length. **More filters** adds analysis status, publication windows/custom dates,
-missing publication dates, reading length, coverage theme, company mentions, saved-analysis topics, and personal tags.
-It also sets the page size (25, 50, or 100). Active selections appear below the toolbar; **Clear filters**
+date, title, or reading length. **General filters** adds analysis status, publication windows/custom dates,
+missing publication dates, reading length and page size (25, 50, or 100). **Topic filters** adds scoped
+saved-analysis topics and personal tags, with an explicit **Show AI investment filters** option when matching coverage signals exist.
+Active selections appear below the toolbar; **Clear filters**
 resets them together while retaining sort and page size. Filters combine; multiple publishers/topics match
 any selected value. Date ranges exclude undated articles. Coverage themes/company mentions work without AI summaries.
-Previous/Next and the Page field navigate results. Search uses indexed literal word prefixes across title,
+Previous/Next and the compact page menu navigate results; open the page menu to jump directly. Search uses indexed literal word prefixes across title,
 author, publisher, and text; multiple words must all match. Search/filter changes reset pagination to page one.
 Returning from another workspace view retains the library page and filter values, including custom dates.
 **Export library** prepares metadata CSV for every matching article (up to 25 MB), or a PDF ZIP
@@ -83,9 +94,13 @@ for the current page (up to 100 PDFs / 50 MB of input files). Full text stays in
 Search and reading work without Ollama.
 The interface uses local system fonts and does not depend on external design assets.
 
+Library has separate **General filters** (status, publication window, reading length and page size, alongside the main search/collection/publisher/sort toolbar) and **Topic filters**. Topic choices and tags come from the complete matching source scope, not only the visible page. Changing general context prunes incompatible selections. **Show AI investment filters** explicitly enables the existing coverage lenses/tracked companies and resets when the general context changes; these are not general-purpose topic classifications.
+
+Research uses the same general/topic distinction. Its saved-topic list is scoped to the search, collection, publisher, date, status, reading length and selected analysis model/version. No saved labels means an explicit empty state; unrelated labels are never substituted. Topic/tag choices exclude their own selections when computing available alternatives, then combine with general predicates for source results.
+
 In the reading room, open **Notes & highlights** to save your own notes, edit comma-separated tags,
 choose collections, or create a collection for a project. Save applies notes, tags and memberships
-together. Personal tags appear on article rows and in **More filters → Personal tags**; selecting
+together. Personal tags appear on article rows and in **Topic filters → Personal tags**; selecting
 several matches any selected tag. Keyword search still searches the publisher text and metadata.
 Your notes are separate from the source text and are not supplied as evidence to the AI.
 
@@ -121,10 +136,14 @@ Version 1 limits: 10,000 articles, 128 MB of JSON metadata, 20 MB per PDF, 250 M
 file creation on a local filesystem supporting hard links. Caught failures roll back new records and
 files; crash-proof coordination across multiple app/CLI processes remains future operational work.
 
-Open **Analytics** for the **Research observatory**. The developer's local AI bubble collection contains 100 public
+Open **Analytics** for the **Research observatory**. **General analytics · any topic** is the default. Select your collection or search saved coverage to explore publication activity, publisher distribution, current-analysis counts, saved topics and reading lengths. Date spans up to 45 days use daily counts; longer spans show up to 60 months, including empty intervals. Topic/status/date clicks filter the notebook and CSV together. Labels come only from current saved `qwen3:8b` analyses; unanalyzed articles still contribute metadata charts and explicitly show missing labels. No model runs automatically. Text and labels support Unicode; generated labels depend on your saved model output and are not translated automatically.
+
+Choose **AI investment coverage · specialist** to use the six English keyword lenses, tracked companies and concern/countercase passages. General mode hides these specialized categories and its source rows show saved topic labels instead. Analytics previews remove Markdown/image destinations; the stored source copy is unchanged.
+
+The developer's local AI bubble collection contains 100 public
 reading sources across 64 website hosts, alongside the five original demonstration articles.
 Select a spending/valuation/returns/financing/power/history lens, a company, a publisher, or a
-publication month: the counts, charts, passage cards, and 12-row source notebook filter together.
+publication date in the specialist view: the counts, charts, passage cards, and 12-row source notebook filter together.
 Search the coverage, change the publication window, reset filters, or export the exact selection.
 Chart transitions and counters use short animations; reduced-motion preferences disable them.
 Coverage themes have consistent blue, purple, teal, amber, clay, and slate accents across bars,
@@ -209,12 +228,14 @@ In a separate terminal:
 ```
 
 Open **Research** in the sidebar. Choose an installed local chat model under **Research settings**,
-and select **AI bubble** under **Research collection** to work with that collection alone,
+and select the collection you want under **Research collection** to work with its saved sources alone,
 then open **Saved insights** and click **Analyze this page**
 to generate summaries, key takeaways, and topic labels for the saved articles. You can also
 analyze one article at a time, filter saved insights by topic, and download insights as JSON.
 Previously generated insights remain viewable when Ollama is offline. Research source search and
 pagination show 25 articles at a time. Analysis batches operate on that page rather than the entire library.
+
+From a reading room with no saved analysis, choose **Analyze in Research** to open that exact article. **Generate analysis** processes only that source and needs a chat model, not an embedding model. No analysis starts just by navigating. Your existing Library and Research filters are preserved; return to Library or the research source list when finished. Offline and deleted-source states explain the next action.
 
 For **Ask library**, choose an installed embedding model under **Research settings** and enter a question.
 The **Search passages** mode finds related text by meaning. **Answer with citations** generates an
@@ -226,8 +247,9 @@ collections above 100 articles: a persistent passage/vector index and background
 If the model finds insufficient evidence, the app
 shows that it cannot answer from the retrieved articles.
 
-This computer already has `qwen3:8b`, `qwen3.5:9b`, and `qwen3-embedding:0.6b` installed.
-For a new machine, install suitable models first, for example:
+Answer cards include expandable cited passages, with original-source links and saved text. Retrieval details show passages searched, embeddings reused/created and the original elapsed time. Submitting the same question, mode, source revision, models and endpoint reuses the last result in this session; select **Generate a fresh result** to run again. This is session reuse, not a persistent research history. Cache reads are batched and the embedding model remains loaded between input batches, then unloads after the final batch before answering. Model choice, context/output budgets and retrieval ranking are unchanged. Hardware/model latency and independently reviewed answer quality remain separate measurements.
+
+The repository does not include model weights. Install suitable models on your machine first, for example:
 
 ```powershell
 ollama pull qwen3:8b
@@ -256,7 +278,7 @@ can take longer, especially on a CPU.
 2. Capture title, publisher, author, publication date, text, extracted word count, article links and image URL references (when present).
 3. Create **one selectable-text PDF per article**. Includes original publisher URL as clickable citation [1], retrieval timestamp and page numbers. Markdown web links become clean clickable labels; basic headings, emphasis, lists, quotes, code, and tables are rendered when present in the saved text. Raw HTML stays literal text. Generation atomically replaces the previous file only after rendering succeeds.
 4. Browse PDFs individually or download the current page's PDFs as a ZIP; export metadata for all matching articles as CSV.
-5. **Analytics view**: linked collections, keyword/date/publisher/lens/company/month filters; up to 60 calendar months including zero-coverage months; six inspectable coverage lenses; company/lens co-mentions; top-eight publisher mix; matched concern/countercase passages; 12-row source pagination and filtered CSV export. The publisher selector includes every publisher in the collection.
+5. **Analytics view**: general collection/query/date/publisher/topic/status filters; daily or monthly activity, saved topic labels, analysis coverage, reading profiles, publisher mix, 12-row notebook and matching CSV. The optional AI investment view adds six lenses, company co-mentions and concern/countercase excerpts. The publisher selector includes every publisher in the collection.
 6. **Research view**: local summaries, takeaways, topic filters, semantic search, and source-grounded questions. Saved insights remain accessible offline; model controls are grouped in Research settings.
 
 ## What this MVP deliberately does not do
@@ -265,7 +287,7 @@ can take longer, especially on a CPU.
 - No browser-based search/discovery, automatic OCR, or sentiment scoring yet.
 - No screenshot-based faithful article archiving. Images are preserved only as URL references in JSON/SQLite, **not embedded in PDFs**. The individual PDF is a clean text reading copy.
 - No guarantee of 100% article extraction. Paywalled, inaccessible, blocked, and JS-only pages can fail and are reported.
-- Analytics uses versioned English keyword/alias rules, not a sentiment model. AI-generated summaries and topic labels appear separately in Research and Library.
+- General analytics describes saved metadata and current saved model topic labels; it does not run a fresh analysis or establish article stance. The optional investment view uses versioned English keyword/alias rules, not a sentiment model.
 - PDFs cite the original URL at article level. AI summaries and answers also cite saved text passages, which can be inspected in the workspace.
 
 ## Privacy, rights and deployment caution
@@ -273,6 +295,8 @@ can take longer, especially on a CPU.
 Use only sources you are authorized to access/reproduce. Respect `robots.txt`, site terms, copyright, and rate limits; never bypass authentication or paywalls. The included fetcher tries to reject private/internal IP addresses, but public multi-user deployments require stronger DNS-rebinding and network egress protections. Run locally initially. The `RobotFileParser` logic makes a best-effort robots check; verify publisher requirements before large-volume jobs.
 
 ## Extraction evaluation
+
+Milestone B adds [phase-bound human review](extraction-evaluation.md) and a [prospective protocol template](evaluation-protocol.example.json). Legacy `review.csv` counts remain available but cannot establish the release gate. New review commands do not fetch, modify existing phase results, create library articles or produce PDFs. Human labels and an eligible prospective cohort are still required.
 
 The first frozen diagnostic cohort contains 100 previously saved AI-bubble sources across 64 hosts.
 The live run captured 78, found 19 access/subscription gates, and encountered three network failures.
@@ -303,9 +327,11 @@ report; `--engine frozen --phase baseline --offline` can replay that snapshot. `
 phase only when its source/cohort/diagnostic checksums and mode still match. Offline replay requires HTML
 mode; Auto may fetch JavaScript resources and is rejected with `--offline`.
 
-The review checklist is `review.csv` beside the reports. Inspect the original and local reading copy,
-declare eligibility, mark body completeness/title/metadata/boilerplate pass or fail, and name the reviewer.
-An incomplete checklist cannot produce a reviewed pass rate. Exclusions never disappear from the cohort.
+The original `review.csv` is a legacy, unbound checklist and cannot certify the reviewed quality gate.
+Use the current phase/hash-bound `--prepare-review` and `--review-summary` workflow in the
+[extraction review guide](extraction-evaluation.md). Inspect the original and local reading copy,
+declare eligibility and review criteria, and record the human reviewer and timestamp. Pending labels,
+failed captures and exclusions remain visible; no labels means no reviewed pass rate.
 
 ## Large-library storage and verification
 
@@ -343,8 +369,15 @@ records the dataset, hardware/runtime, warm-query p95 timings, bounded payload s
 timings. These measurements exclude browser paint, publisher fetching, PDF generation, live inference,
 and semantic index construction. They do not establish production concurrency or extraction/AI quality.
 
-The new observatory queries have a separate dense synthetic benchmark:
-`python scripts/benchmark_observatory.py`, reported in `output/observatory-benchmark.json`.
+The observatory queries have a separate dense synthetic benchmark covering general and specialist modes,
+with three hand-authored saved topic labels per article. Use a new output filename to retain earlier runs:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_observatory.py --output output/benchmarks/observatory-current.json
+```
+
+Omitting `--output` writes `output/observatory-benchmark.json`. These are warm SQL/serialization timings,
+excluding browser paint, fetching, PDFs, inference and concurrency; synthetic labels do not evaluate model quality.
 The earlier library report measures the previous analytics aggregate function and does not establish
 the observatory's performance.
 

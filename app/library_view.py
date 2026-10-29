@@ -19,7 +19,7 @@ from app.exports import metadata_csv, page_pdf_zip, pdf_download_name
 from app.ui import (
     display_date, empty_state, metrics, navigate, page_header, publisher,
     reading_minutes, topic_chips, pagination, reset_page_if_changed,
-    literal_markdown,
+    literal_markdown, open_article_research,
 )
 
 
@@ -107,7 +107,13 @@ def reading_room(article, insight):
         if insight:
             render_saved_insight(article, insight, key_prefix='reader')
         else:
-            empty_state('No saved analysis yet', 'Open Research to generate a summary and source-backed takeaways.')
+            with st.container(border=True):
+                st.subheader('No saved analysis yet')
+                st.write('Generate a summary and cited takeaways for this article in Research.')
+                if st.button('Analyze in Research', key='research_article_' + article['id'],
+                             type='primary', icon=':material/arrow_forward:',
+                             on_click=open_article_research, args=(article['id'],)):
+                    st.rerun(scope='app')
     with notes:
         render_annotations(article, annotations)
     with details:

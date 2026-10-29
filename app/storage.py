@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.facets import FACET_VERSION, extract_facets
+from app.text_preview import plain_excerpt
 
 DB = Path(os.getenv('ARTICLE_LIBRARY_DB', str(Path(__file__).resolve().parents[1] / 'data' / 'articles.db')))
 
@@ -270,7 +271,7 @@ def _search_expression(query):
 
 def _library_query(query='', sources=None, status='All articles', topics=None,
                    model='qwen3:8b', version='1', collection_id=None, lens=None, entity=None,
-                   start_date=None, end_date=None, month=None, include_facets=False,
+                   start_date=None, end_date=None, month=None, include_facets=False, day=None,
                    min_words=None, max_words=None, date_status=None, tags=None):
     if len(query) > 256:
         raise ValueError('Search must be 256 characters or fewer.')
@@ -310,6 +311,9 @@ def _library_query(query='', sources=None, status='All articles', topics=None,
     if month:
         clauses.append('substr(a.published,1,7)=?')
         parameters.append(month)
+    if day:
+        clauses.append('date(a.published)=date(?)')
+        parameters.append(day)
     if query.strip():
         expression = _search_expression(query)
         if expression:
@@ -356,7 +360,7 @@ def library_page(*, page=1, page_size=25, sort='Newest saved', **filters):
         pages = max(1, (total + page_size - 1) // page_size)
         page = max(1, min(int(page), pages))
         rows = con.execute('''SELECT a.id,a.url,a.title,a.source,a.author,a.published,
-            a.fetched_at,a.word_count,a.pdf_path,substr(a.text,1,240) AS excerpt,s.insight_json '''
+            a.fetched_at,a.word_count,a.pdf_path,substr(a.text,1,2400) AS excerpt,s.insight_json '''
             + sql + ' ORDER BY ' + SORTS[sort] + ' LIMIT ? OFFSET ?',
             parameters + [page_size, (page - 1) * page_size]).fetchall()
         items = []
@@ -368,11 +372,42 @@ def library_page(*, page=1, page_size=25, sort='Newest saved', **filters):
                 tag_labels.setdefault(tagged['article_id'], []).append(tagged['label'])
         for row in rows:
             item = dict(row)
+            item['excerpt'] = plain_excerpt(item['excerpt'], title=item['title'])
             encoded = item.pop('insight_json')
             item['insight'] = json.loads(encoded) if encoded else None
             item['tags'] = tag_labels.get(item['id'], [])
             items.append(item)
     return dict(items=items, total=total, pages=pages, page=page, page_size=page_size)
+
+
+def library_filter_options(*, retain_topics=(), retain_tags=(), **filters):
+    """Bounded metadata choices from the complete matching scope, not its page.
+
+    Callers omit topic/tag/lens selections when building their own option lists,
+    so a selected value does not hide alternative choices in the same scope.
+    Uses the exact article/insight/facet predicates used for results and exports.
+    """
+    sql, parameters = _library_query(**dict(filters, include_facets=True))
+    scope = ('WITH matching AS (SELECT a.id,s.insight_json,f.signals_json ' + sql + ') ')
+    retained_topics = list(dict.fromkeys(value for value in retain_topics if isinstance(value, str) and len(value) <= 60))[:100]
+    retained_tags = list(dict.fromkeys(value for value in retain_tags if isinstance(value, str) and len(value) <= 160))[:100]
+    topic_priority = ('CASE WHEN j.value IN (' + ','.join('?' for _ in retained_topics) + ') THEN 0 ELSE 1 END,') if retained_topics else ''
+    tag_priority = ('CASE WHEN t.tag_key IN (' + ','.join('?' for _ in retained_tags) + ') THEN 0 ELSE 1 END,') if retained_tags else ''
+    with connect() as con:
+        con.execute('BEGIN')
+        counts = dict(con.execute('SELECT COUNT(*) AS total,COUNT(s.article_id) AS analyzed ' + sql, parameters).fetchone())
+        topics = [row[0] for row in con.execute(scope + f'''SELECT j.value FROM matching m,
+            json_each(m.insight_json,'$.topics') j WHERE j.type='text' AND length(j.value) BETWEEN 1 AND 60
+            GROUP BY j.value ORDER BY {topic_priority}COUNT(DISTINCT m.id) DESC,j.value COLLATE NOCASE LIMIT 100''', parameters + retained_topics)]
+        tags = {row['tag_key']: row['label'] for row in con.execute(scope + f'''SELECT t.tag_key,MIN(t.label) AS label
+            FROM matching m JOIN article_tags t ON t.article_id=m.id GROUP BY t.tag_key
+            ORDER BY {tag_priority}COUNT(DISTINCT m.id) DESC,t.tag_key LIMIT 100''', parameters + retained_tags)}
+        signals = {}
+        for name in ('lenses', 'entities'):
+            signals[name] = [row[0] for row in con.execute(scope + f'''SELECT j.value FROM matching m,
+                json_each(m.signals_json,'$.{name}') j WHERE j.type='text' GROUP BY j.value
+                ORDER BY COUNT(DISTINCT m.id) DESC,j.value COLLATE NOCASE LIMIT 100''', parameters)]
+    return dict(counts, topics=topics, tags=tags, **signals)
 
 
 def library_overview(model='qwen3:8b', version='1'):
@@ -472,12 +507,20 @@ def _text_hash(text):
 
 def cached_embeddings(model, texts):
     result = {}
+    # Bound SQL parameters and fetch a whole batch instead of one query per
+    # passage. Preserve the exact stored vectors and model/text cache identity.
+    by_hash = {_text_hash(text): text for text in texts}
+    hashes = list(by_hash)
+    if not hashes:
+        return result
     with connect() as con:
-        for text in texts:
-            row = con.execute('SELECT vector_json FROM embeddings WHERE model=? AND text_hash=?',
-                              (model, _text_hash(text))).fetchone()
-            if row:
-                result[text] = json.loads(row['vector_json'])
+        for start in range(0, len(hashes), 256):
+            batch = hashes[start:start + 256]
+            rows = con.execute(
+                'SELECT text_hash,vector_json FROM embeddings WHERE model=? AND text_hash IN ('
+                + ','.join('?' for _ in batch) + ')', (model, *batch))
+            for row in rows:
+                result[by_hash[row['text_hash']]] = json.loads(row['vector_json'])
     return result
 
 

@@ -1,4 +1,5 @@
 <section class="obs" id="observatory" aria-label="Interactive research analytics" aria-busy="false">
+  <label class="obs-field obs-mode-field"><span>Analysis view</span><select id="analysis-mode" aria-label="Analytics view"><option value="general">General analytics · any topic</option><option value="investment">AI investment coverage · specialist</option></select></label>
   <div class="obs-toolbar">
     <label class="obs-field collection-field"><span>Collection</span><select id="collection" aria-label="Research collection"></select></label>
     <label class="obs-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="query" type="search" maxlength="256" placeholder="Find something in the coverage" aria-label="Search coverage"></label>
@@ -13,20 +14,21 @@
     <div class="obs-kpis">
       <div class="obs-kpi"><span>Articles in view</span><strong id="metric-articles">0</strong><small id="metric-articles-note"></small></div>
       <div class="obs-kpi"><span>Publishers</span><strong id="metric-publishers">0</strong><small>Distinct source labels</small></div>
-      <div class="obs-kpi"><span>Bubble language</span><strong id="metric-bubble">0</strong><small>Articles mentioning the debate</small></div>
+      <div class="obs-kpi"><span id="metric-third-label">Analyzed articles</span><strong id="metric-bubble">0</strong><small id="metric-third-note">Current saved analyses</small></div>
     </div>
   </div>
   <div class="obs-grid obs-first-grid">
-    <article class="obs-panel obs-timeline-panel"><div class="obs-panel-heading"><div><h3>How the coverage unfolds</h3><p>Publication dates in this collection</p></div><span class="obs-small-tag" id="date-span"></span></div><div class="obs-timeline" id="timeline" aria-label="Publication activity"></div><div class="obs-chart-footer"><span>Click a month to focus the collection</span><button class="obs-text-button" id="clear-month" hidden>Clear month</button></div></article>
-    <article class="obs-panel"><div class="obs-panel-heading"><div><h3>What the stories examine</h3><p>Each article can match more than one lens</p></div></div><div class="obs-lens-list" id="lenses" aria-label="Coverage lenses"></div></article>
+    <article class="obs-panel obs-timeline-panel"><div class="obs-panel-heading"><div><h3>How the coverage unfolds</h3><p id="timeline-note">Publication dates in this collection</p></div><span class="obs-small-tag" id="date-span"></span></div><div class="obs-timeline" id="timeline" aria-label="Publication activity"></div><div class="obs-chart-footer"><span id="timeline-hint">Click a date to focus the collection</span><button class="obs-text-button" id="clear-month" hidden>Clear date</button></div></article>
+    <article class="obs-panel"><div class="obs-panel-heading"><div><h3 id="topics-heading">Topics in this collection</h3><p id="topics-note">Labels from current saved analyses</p></div></div><div class="obs-lens-list" id="lenses" aria-label="Coverage lenses"></div><div class="obs-lens-list" id="topics" aria-label="Saved analysis topics"></div></article>
   </div>
   <div class="obs-grid obs-second-grid">
-    <article class="obs-panel"><div class="obs-panel-heading"><div><h3>Companies in the conversation</h3><p>Articles mentioning a company and a coverage lens</p></div><span class="obs-small-tag">Select a cell to explore</span></div><div class="obs-matrix-wrap" id="matrix" aria-label="Company and coverage lens matrix"></div></article>
+    <article class="obs-panel" id="investment-panel"><div class="obs-panel-heading"><div><h3>Companies in the conversation</h3><p>Articles mentioning a company and a coverage lens</p></div><span class="obs-small-tag">Select a cell to explore</span></div><div class="obs-matrix-wrap" id="matrix" aria-label="Company and coverage lens matrix"></div></article>
+    <article class="obs-panel" id="general-panel"><div class="obs-panel-heading"><div><h3>Analysis &amp; reading profile</h3><p>See what is ready and where to explore next</p></div></div><div id="analysis-status" class="obs-profile-status" aria-label="Filter by analysis status"></div><div id="reading-profile" class="obs-publishers"></div><p id="reading-note" class="obs-footnote"></p></article>
     <article class="obs-panel"><div class="obs-panel-heading"><div><h3>Who’s contributing</h3><p>Publisher share of the current selection</p></div></div><select class="obs-source-select" id="publisher" aria-label="Filter analytics by publisher"></select><div id="publishers" class="obs-publishers"></div><div id="publisher-note" class="obs-footnote"></div></article>
   </div>
-  <div class="obs-evidence-heading"><div><h3>Passages worth inspecting</h3><p>Matched source language, not article stance or a fact check</p></div></div>
+  <div class="obs-evidence-heading" id="evidence-heading"><div><h3>Passages worth inspecting</h3><p>Matched source language, not article stance or a fact check</p></div></div>
   <div class="obs-grid obs-evidence-grid" id="arguments"></div>
   <article class="obs-panel obs-notebook"><div class="obs-panel-heading"><div><h3>The source notebook</h3><p id="notebook-caption">Follow the evidence back to the article</p></div><span class="obs-small-tag">Most recently published first</span></div><div id="source-rows"></div><div class="obs-pagination"><button class="obs-button" id="previous">← Previous</button><span id="page-label" aria-live="polite"></span><button class="obs-button" id="next">Next →</button></div></article>
-  <div class="obs-final-note">Coverage describes the saved sources in this collection. It does not establish whether an AI bubble exists.</div>
+  <div class="obs-final-note" id="final-note">Counts describe your saved sources, not all reporting on a topic.</div>
   <div class="obs-tooltip" id="chart-tooltip" role="tooltip" hidden><div class="obs-tooltip-label"></div><strong></strong><p></p><small></small></div>
 </section>

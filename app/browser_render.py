@@ -91,13 +91,16 @@ async def _launch(playwright):
     choices = ['chrome', 'msedge', 'chromium'] if requested == 'auto' else [requested]
     for channel in choices:
         try:
-            options = dict(headless=True, timeout=8000)
-            if channel != 'chromium':
-                options['channel'] = channel
+            # Explicitly enable the OS sandbox. A non-root container user alone
+            # does not enable it; never retry a failed launch without it.
+            options = dict(headless=True, timeout=8000, chromium_sandbox=True)
+            # Use full Chromium's current headless implementation for the bundled
+            # channel too, consistently across native and container installs.
+            options['channel'] = channel
             return await playwright.chromium.launch(**options)
         except Exception:
             continue
-    raise extract.ExtractionError('No supported browser could start. Install Chrome/Edge or run: python -m playwright install chromium. HTML-only imports remain available.')
+    raise extract.ExtractionError('No supported sandboxed browser could start. Install Chrome/Edge or run: python -m playwright install chromium. Linux needs browser system libraries and user-namespace sandbox support; containers need the documented non-root/seccomp configuration. HTML-only imports remain available.')
 
 
 async def _render(url, initial_html):

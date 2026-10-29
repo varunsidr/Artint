@@ -4,6 +4,7 @@ import math
 import os
 import re
 import textwrap
+from time import perf_counter
 
 import requests
 from jsonschema import ValidationError, validate
@@ -81,11 +82,11 @@ class OllamaClient:
             raise IntelligenceError('The model returned incomplete data or invalid citations. Please try again.') from exc
         return result
 
-    def embed(self, model, texts):
+    def embed(self, model, texts, *, keep_alive=0):
         if not texts:
             return []
         data = self._request('POST', '/api/embed', json={
-            'model': model, 'input': texts, 'truncate': False, 'keep_alive': 0,
+            'model': model, 'input': texts, 'truncate': False, 'keep_alive': keep_alive,
         })
         vectors = data.get('embeddings')
         if not isinstance(vectors, list) or len(vectors) != len(texts):
@@ -182,7 +183,8 @@ def _cosine(left, right):
     return sum(a*b for a, b in zip(left, right)) / denominator
 
 
-def semantic_search(question, articles, embedding_model, client=None, limit=6):
+def semantic_search(question, articles, embedding_model, client=None, limit=6, *, stats=None):
+    started = perf_counter()
     question = question.strip()
     if not question or len(question) > MAX_QUESTION_CHARS:
         raise IntelligenceError(f'Enter a question between 1 and {MAX_QUESTION_CHARS} characters.')
@@ -197,17 +199,28 @@ def semantic_search(question, articles, embedding_model, client=None, limit=6):
     missing = [value for value in inputs if value not in vectors]
     for start in range(0, len(missing), 16):
         batch = missing[start:start + 16]
-        generated = client.embed(embedding_model, batch)
+        # Keep the same model loaded between batches, then release it before
+        # answer generation so smaller GPUs retain the existing memory budget.
+        # A failed intermediate batch expires after one minute.
+        more_batches = start + 16 < len(missing)
+        generated = client.embed(embedding_model, batch, keep_alive='1m' if more_batches else 0)
         save_embeddings(embedding_model, dict(zip(batch, generated)))
         vectors.update(zip(batch, generated))
     ranked = [dict(passage, score=_cosine(vectors[text], vectors[query]))
               for passage, text in zip(passages, texts)]
-    return sorted(ranked, key=lambda passage: passage['score'], reverse=True)[:limit]
+    selected = sorted(ranked, key=lambda passage: passage['score'], reverse=True)[:limit]
+    if stats is not None:
+        stats.update(passages_searched=len(passages), embeddings_reused=len(inputs) - len(missing),
+                     embeddings_created=len(missing), embedding_batches=math.ceil(len(missing) / 16),
+                     retrieval_seconds=round(perf_counter() - started, 3))
+    return selected
 
 
 def answer_question(question, articles, model, embedding_model, client=None):
+    question = question.strip()
     client = client or OllamaClient()
-    passages = semantic_search(question, articles, embedding_model, client)
+    stats = {}
+    passages = semantic_search(question, articles, embedding_model, client, stats=stats)
     schema = {
         'type': 'object', 'additionalProperties': False,
         'properties': {
@@ -225,4 +238,4 @@ def answer_question(question, articles, model, embedding_model, client=None):
     ), schema)
     if result['supported'] != bool(result['claims']):
         raise IntelligenceError('The model returned an inconsistent answer. Please try again.')
-    return dict(result, passages=passages, model=model, question=question)
+    return dict(result, passages=passages, model=model, question=question, retrieval=stats)

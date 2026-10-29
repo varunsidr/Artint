@@ -10,18 +10,24 @@ Built with Python, Streamlit, SQLite, Playwright, and Ollama. Intended for perso
 
 - **Build a library.** Import public article URLs, keep a separate PDF for each article, and search saved text with indexed filters and pagination.
 - **Discover sources.** Search recent news by topic, keywords, publisher, date, and language; preview results before importing a selection.
-- **Compare coverage.** Explore linked timelines, publishers, companies, and six inspectable AI investment coverage themes. Every count leads back to saved sources.
+- **Explore any topic.** General analytics links publication trends, publishers, saved analysis topics, analysis status and reading profiles. Choose the specialist AI investment view for company mentions and six inspectable coverage lenses.
 - **Keep your own research.** Add notes, personal tags, project collections, and highlights anchored to a particular text revision.
 - **Use local AI when you need it.** Generate cited summaries and takeaways, search semantically, and ask questions across saved articles through Ollama.
 - **Take your work with you.** Export filtered metadata, download reading PDFs, or back up and restore the library with annotations and saved analyses.
 
 Library search, reading, notes, exports, and coverage analytics work without a running model. Themes support light and dark appearances.
 
-![Linked coverage analytics in light mode, using synthetic demo content](docs/images/analytics-light.png)
+Library and Research separate **General filters** from **Topic filters**. Topic labels and personal tags come from all matching source articles under the current search/collection and metadata filters, rather than unrelated analyses elsewhere in the library. Stale selections clear when the context changes. AI investment-specific Library controls require an explicit opt-in. Sources without saved topic labels remain searchable and show that no labels are available.
+
+Analytics opens in **General analytics**, for any collection or language. Metadata charts work immediately; topic charts use current saved `qwen3:8b` analyses and disclose missing labels. The reading room's empty Analysis tab opens Research focused on that single article. Repeated identical questions can reuse the last session result; **Generate a fresh result** bypasses reuse. Evidence cards expose the cited passages directly.
+
+![General analytics in light mode, using 36 fictional articles and hand-authored example topic labels](docs/images/analytics-general-light.png)
 
 ## Run locally
 
-The validated development environment is **Windows, PowerShell, and Python 3.13**. Run these commands from the folder containing `app/`, `README.md`, and `requirements.txt`:
+Use **Python 3.13**. Windows and native Ubuntu/WSL2 x86_64 have been checked, along with the local Docker image. See [installation and recovery](docs/installation.md) and the [actual validation matrix](docs/validation.md) for platform details and pending checks. Run from the folder containing `app/`, `README.md`, and `requirements.txt`.
+
+Windows / PowerShell:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -30,6 +36,24 @@ py -3.13 -m venv .venv
 ```
 
 Open **http://localhost:8501**. A fresh checkout starts with an empty library. Import a few public article URLs to begin, or try the synthetic demo below. Virtual environment activation is optional; the commands above work without changing PowerShell's execution policy.
+
+Linux / Bash, with a separately installed Python 3.13:
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m playwright install --with-deps chromium
+.venv/bin/python scripts/check_install.py --browser
+.venv/bin/python -m streamlit run app/dashboard.py
+```
+
+Docker Compose:
+
+```sh
+docker compose up --build -d --wait
+```
+
+Open **http://127.0.0.1:8501**. Compose uses isolated persistent volumes and a non-root, sandboxed-browser runtime. If a native app already uses that port, set `ARTINT_PORT=8503` before starting Compose. Installation/model diagnostics, Ubuntu namespace requirements, optional Ollama networking, backups and explicit native-to-container migration are covered in the [installation guide](docs/installation.md). Native macOS, ARM64 and GPU configurations remain unvalidated.
 
 Auto capture tries normal HTML first, then a bounded browser session for incomplete JavaScript pages. If Chrome or Edge is unavailable, install Chromium:
 
@@ -44,7 +68,7 @@ ollama pull qwen3:8b
 ollama pull qwen3-embedding:0.6b
 ```
 
-Model inference runs locally; performance depends on your hardware. Model selection and connection settings are in **Research**. See the [operating guide](docs/usage.md) for capture options, search behavior, model configuration, backups, and CLI usage. Other operating systems need clean-install validation before being declared supported.
+Model inference runs locally with the default native loopback endpoint; performance depends on your hardware. **Research settings** shows model selection and connection status. Set `OLLAMA_BASE_URL` before starting the app to configure another endpoint. See the [operating guide](docs/usage.md) for capture options, search behavior, model configuration, backups, and CLI usage. Container-to-host Ollama connectivity is optional and must be configured explicitly.
 
 ## Try the synthetic demo
 
@@ -75,7 +99,7 @@ The default library is `data/articles.db`; reading PDFs live in `output/pdfs/`. 
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The default suite uses offline fixtures; one browser test is opt-in. To run that test too with installed Chrome/Edge/Chromium:
+The default suite uses offline fixtures. Enable the extraction browser test with installed Chrome/Edge/Chromium:
 
 ```powershell
 $env:RUN_BROWSER_TESTS = '1'
@@ -83,7 +107,11 @@ $env:RUN_BROWSER_TESTS = '1'
 Remove-Item Env:RUN_BROWSER_TESTS
 ```
 
-[GitHub Actions](.github/workflows/tests.yml) installs Chromium and runs the full suite on Windows/Python 3.13 for pushes and pull requests. Its first hosted run happens after you push. `requirements.txt` pins direct runtime dependencies; `requirements-lock.txt` records the tested development environment.
+The separate live-server installation test requires the disposable server started by `scripts/validate_native.py` or `scripts/validate_container.py`; it remains skipped in an ordinary suite run. The latest Windows checkpoint passed 231 tests with that installation test skipped. Subsequent Linux/Docker revalidation and the expanded hosted CI run remain pending; the [validation record](docs/validation.md) separates those from earlier packaging checks.
+
+[GitHub Actions](.github/workflows/tests.yml) defines Windows/Python 3.13, Ubuntu/Python 3.13 and disposable Docker validation. The expanded workflow has not yet run remotely; local results are in [validation](docs/validation.md). `requirements.txt` pins direct runtime dependencies; `requirements-lock.txt` records the Windows/development environment and `requirements-linux-lock.txt` records the clean Linux runtime resolution.
+
+`python scripts/check_install.py --browser` reports installation and actual Linux sandbox status without opening your library. `python scripts/smoke_install.py` checks search, PDF export, annotations and portable restore in temporary storage. With development dependencies installed, `python scripts/validate_native.py` checks a disposable live UI, and `python scripts/validate_container.py` builds/tests its own isolated Compose project. Neither validator uses your real library.
 
 ## Scope and limitations
 
@@ -91,16 +119,21 @@ This is a local research MVP. Authentication, shared workspaces, cloud deploymen
 
 Captures can be incomplete, blocked, or missing metadata. Capture diagnostics flag possible issues for review; they do not establish factual accuracy. The existing 100-source diagnostic cohort does **not** establish the planned 90% extraction completeness target. AI answers and summaries also need checking against their cited passages.
 
-Coverage analytics currently use English keyword rules and company aliases. These are text mentions, not sentiment scores or verified financial relationships. Discovery language filters do not make the analytics multilingual. PDFs are text reading copies, not faithful page archives or OCR. Images remain references.
+The specialist AI investment view uses English keyword rules and company aliases. These are text mentions, not sentiment scores or verified financial relationships. General analytics supports Unicode metadata and saved topic labels, but does not translate labels or provide evaluated multilingual claim analysis. PDFs are text reading copies, not faithful page archives or OCR. Images remain references.
 
 Use sources you are authorized to access and reproduce. Capture respects robots checks and does not bypass sign-in or paywalls. Keep the server bound to localhost; this application has not been hardened for an untrusted multi-user deployment.
 
 ## Project documentation
 
+- [Proposed next-release plan](docs/roadmap.md): evaluation, portability, retrieval, saved research and cross-publisher comparison.
+- [Installation and recovery](docs/installation.md): Windows, Linux and Compose setup, diagnostics, model connectivity and backups.
+- [Validation record](docs/validation.md): latest Windows checkpoint, historical portability checks and pending verification.
+- [Extraction review workflow](docs/extraction-evaluation.md): prospective cohorts, phase-bound human checklists, source-type accounting and unresolved quality gates.
 - [Operating guide](docs/usage.md): detailed workflows and configuration.
 - [Architecture](architecture.md): data flow, storage, trust boundaries, and planned evolution.
 - [Requirements](requirements.md): product scope and acceptance criteria.
 - [Milestones](milestones.md): completed work, historical measurements, and outstanding validation.
+- [Changelog](CHANGELOG.md): unreleased changes and their verification limits.
 - [Publishing guide](docs/publishing.md): review and push your local repository.
 
 ## License
