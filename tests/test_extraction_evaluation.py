@@ -58,16 +58,31 @@ def test_manifest_ids_cannot_escape_the_cache_directory(tmp_path):
         evaluation.evaluate(options(tmp_path))
 
 
-def test_resume_rejects_an_engine_change_in_the_same_phase(tmp_path):
+@pytest.mark.parametrize('field', ['extraction_sha256', 'cleanup_sha256'])
+def test_resume_rejects_an_engine_change_in_the_same_phase(tmp_path, field):
     fixture(tmp_path)
     evaluation.evaluate(options(tmp_path))
     path = tmp_path/'baseline.json'
     report = json.loads(path.read_text())
-    report['extraction_sha256'] = 'different'
+    report[field] = 'different'
     path.write_text(json.dumps(report))
     args = options(tmp_path)
     args.resume = True
     with pytest.raises(ValueError, match='different source/code'):
+        evaluation.evaluate(args)
+
+
+def test_frozen_extraction_refuses_a_changed_cleanup_dependency(tmp_path):
+    fixture(tmp_path)
+    evaluation.evaluate(options(tmp_path))
+    report = json.loads((tmp_path/'baseline.json').read_text())
+    report['cleanup_sha256'] = 'different'
+    (tmp_path/'initial-diagnostics.json').write_text(json.dumps(report))
+    (tmp_path/'local-cache/baseline-extract.py').write_bytes((evaluation.ROOT/'app/extract.py').read_bytes())
+    args = options(tmp_path)
+    args.engine = 'frozen'
+    args.resume = True
+    with pytest.raises(ValueError, match='cleanup dependency'):
         evaluation.evaluate(args)
 
 

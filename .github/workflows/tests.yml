@@ -66,6 +66,13 @@ jobs:
         run: python -m pytest -q
       - name: Build synthetic demo
         run: python scripts/seed_demo.py --output output/ci-demo
+      - name: Verify research evaluation harness with synthetic fixtures
+        run: |
+          python scripts/evaluate_research.py validate --corpus tests/fixtures/research/synthetic-v1.json
+          python scripts/evaluate_research.py run --corpus tests/fixtures/research/synthetic-v1.json --output output/ci-research-retrieval --engine fixture --mode retrieval
+          python scripts/evaluate_research.py run --corpus tests/fixtures/research/synthetic-v1.json --output output/ci-research-answers --engine fixture --mode answers
+          python scripts/evaluate_research.py prepare-review --run output/ci-research-answers --output output/ci-research-answers/review.json
+          python scripts/evaluate_research.py review-summary --run output/ci-research-answers --review output/ci-research-answers/review.json --output output/ci-research-answers/review-summary.json
       - name: Verify isolated PDF, search and portable restore
         run: python scripts/smoke_install.py
       - name: Verify native startup and live reading UI

@@ -1,17 +1,20 @@
 """Research workspace with optional local models and inspectable saved evidence."""
 import json
+from datetime import datetime, timezone
 from html import escape
 from time import perf_counter
 
 import streamlit as st
 
 from app.intelligence import (
-    ANALYSIS_VERSION, IntelligenceError, OllamaClient, analyze_article, answer_question,
+    ANALYSIS_VERSION, CONTEXT_POLICY_VERSION, IntelligenceError, OllamaClient, analyze_article, answer_question,
     article_passages, semantic_search,
 )
-from app.storage import get_article, library_filter_options, library_overview, library_page, load_articles, load_insight
+from app.storage import article_fingerprint, get_article, library_filter_options, library_overview, library_page, load_articles, load_insight
 from app.library_filters import build_filters, LENGTHS, PERIODS
 from app.observatory_data import collections
+from app.model_health import inspect_ollama, memory_share_label
+from app.research_export import research_exports
 from app.ui import display_date, empty_state, page_header, topic_chips, pagination, reset_page_if_changed, navigate, literal_markdown
 
 
@@ -50,6 +53,7 @@ def render_saved_insight(article, insight, key_prefix='insight'):
         _show_claim(point)
     if insight.get('partial', False):
         st.info(f"Partial analysis: {insight['passages_analyzed']} of {insight['total_passages']} passages were analyzed.")
+    _show_generation_context(insight)
     ids = set(insight['summary']['sources'])
     ids.update(source for point in insight['key_points'] for source in point['sources'])
     with st.expander('Inspect supporting passages', icon=':material/format_quote:'):
@@ -92,9 +96,79 @@ def _focused_analysis(article_id, model, client, ready, force):
     st.button('Return to Library', on_click=navigate, args=('Library',), icon=':material/book_2:')
 
 
+def _show_generation_context(result):
+    generation = result.get('generation', {})
+    if not isinstance(generation, dict):
+        return
+    if type(generation.get('context_window')) is int and generation['context_window'] in (8192, 16384):
+        label = f"{generation['context_window'] // 1024}K context"
+        if type(generation.get('prompt_tokens')) is int and generation['prompt_tokens'] >= 0:
+            label += f" · {generation['prompt_tokens']:,} input tokens"
+        if isinstance(generation.get('attempts'), list) and len(generation['attempts']) > 1:
+            label += ' · expanded to fit the complete request'
+        st.caption(label)
+
+
+def _compute_table(rows):
+    columns = ('Role', 'Model', 'Installed', 'Loaded on', 'Context tokens', 'Model memory on GPU')
+    head = ''.join('<th scope="col">' + escape(key) + '</th>' for key in columns)
+    body = ''.join('<tr>' + ''.join('<td>' + escape(str(row[key])) + '</td>' for key in columns) + '</tr>' for row in rows)
+    return ('<div class="compute-status" tabindex="0" role="region" aria-label="Model compute status">'
+            '<table aria-label="Selected model status"><thead><tr>' + head + '</tr></thead><tbody>'
+            + body + '</tbody></table></div>')
+
+
+def _compute_status(base_url, model, embedding_model):
+    scope = (base_url, model, embedding_model)
+    saved = st.session_state.get('research_compute_status')
+    if saved and saved['scope'] != scope:
+        st.session_state.pop('research_compute_status', None)
+        saved = None
+    if st.button('Check model status', key='research_check_compute', icon=':material/memory:'):
+        try:
+            with st.spinner('Checking model metadata...'):
+                report = inspect_ollama(base_url, chat_model=model, embedding_model=embedding_model)
+            saved = dict(scope=scope, report=report)
+            st.session_state['research_compute_status'] = saved
+        except ValueError as exc:
+            saved = None
+            st.session_state.pop('research_compute_status', None)
+            st.warning(str(exc))
+    if not saved:
+        st.caption('Check installed models, runtime compatibility and loaded GPU/CPU memory. This does not load a model.')
+        return
+    report = saved['report']
+    for issue in report['errors']:
+        st.warning(issue['message'])
+    rows = []
+    for role, label in (('chat', 'Answer'), ('embedding', 'Search')):
+        item = report['selected'][role]
+        memory = item['residency'] or {}
+        placement = ('Unavailable' if item['loaded'] is None else 'Not loaded' if not item['loaded']
+                     else dict(gpu='GPU', cpu='CPU', mixed='CPU + GPU', unknown='Unknown').get(memory.get('placement'), 'Unknown'))
+        context = memory.get('context_tokens')
+        rows.append({'Role': label, 'Model': item['name'] or 'Not selected',
+            'Installed': 'Unknown' if item['installed'] is None else 'Yes' if item['installed'] else 'No',
+            'Loaded on': placement, 'Context tokens': f'{context:,}' if context is not None else '—',
+            'Model memory on GPU': memory_share_label(memory)})
+    st.html(_compute_table(rows))
+    version = report['runtime_version'] or 'Unavailable'
+    checked = datetime.fromisoformat(report['checked_at']).strftime('%d %b %Y, %H:%M:%S UTC')
+    st.caption(f'Ollama {version} · Checked {checked}')
+    st.caption('GPU percentages describe model memory, not activity or speed. Models can unload when idle. '
+               'KV-cache precision is not reported by this API.')
+
+
 def _research_answer(answer, reused=False):
     st.subheader('Research answer' if 'supported' in answer else 'Matching passages')
     st.text(answer['question'])
+    source_scope = answer.get('source_scope')
+    if isinstance(source_scope, dict):
+        ids = source_scope.get('searched_article_ids')
+        if isinstance(ids, list):
+            st.caption(f"Original scope: {len(ids):,} saved articles · {len(answer['passages'])} retrieved passages")
+        models = [answer.get('model'), source_scope.get('embedding_model')]
+        st.caption('Result models: ' + literal_markdown(' / '.join(dict.fromkeys(value for value in models if isinstance(value, str) and value))))
     if answer.get('supported') is False:
         st.info('These articles do not contain enough evidence to answer this question.')
     passages = answer['passages']
@@ -115,15 +189,47 @@ def _research_answer(answer, reused=False):
     if trace:
         st.caption(f"{trace['passages_searched']:,} passages searched · {len(passages)} retrieved · "
                    f"{trace['embeddings_reused']:,} embeddings reused · {trace['embeddings_created']:,} created")
+    _show_generation_context(answer)
     if 'elapsed_seconds' in answer:
         prefix = 'Reused the previous result for this exact question and source selection' if reused else 'Completed'
         st.caption(f"{prefix} · original run {answer['elapsed_seconds']:.1f}s. Check the cited evidence before relying on a claim.")
+    try:
+        brief, snapshot = research_exports(answer)
+        readable, complete = st.columns(2)
+        with readable:
+            st.download_button('Download research brief', brief, file_name='research-brief.md',
+                               mime='text/markdown', key='research_export_markdown', on_click='ignore', icon=':material/download:')
+        with complete:
+            st.download_button('Download full result', snapshot, file_name='research-result.json',
+                               mime='application/json', key='research_export_json', on_click='ignore', icon=':material/data_object:')
+    except (ValueError, TypeError):
+        st.warning('This result cannot be exported completely. Check its evidence or generate a fresh result.')
+
+
+def _discard_research_result():
+    st.session_state.pop('ai_research', None)
+    st.session_state.pop('ai_research_error', None)
+
+
+def _show_research_result(scope=None, reused=False):
+    failed = st.session_state.get('ai_research_error')
+    if failed and failed['scope'] == scope:
+        st.error(literal_markdown(failed['message']))
+    research = st.session_state.get('ai_research')
+    if not research:
+        return
+    if research['scope'] != scope or (failed and failed['scope'] == scope):
+        st.info('Showing your last completed result. Its original source and model selection may differ from the current controls; the saved passages below remain unchanged.')
+    _research_answer(research['result'], reused)
+    st.button('Clear research result', key='research_clear_result', on_click=_discard_research_result,
+              help='Clear this session result and its exports. Saved articles and analyses are kept.', icon=':material/close:')
 
 
 def render_intelligence(overview):
     page_header('Research', 'Research workspace', 'Choose your sources. Check the evidence behind every answer.')
     if not overview['total']:
         empty_state('Good questions start with good sources', 'Import a few articles to begin your research.')
+        _show_research_result()
         return
 
     client = OllamaClient()
@@ -146,8 +252,10 @@ def render_intelligence(overview):
         with controls[2]:
             if st.button('Refresh models', icon=':material/refresh:'):
                 _model_status.clear()
+                st.session_state.pop('research_compute_status', None)
                 st.rerun()
         force = st.checkbox('Regenerate existing analyses', value=False)
+        st.caption('Context adjusts between 8K and 16K to fit the request and leave room for the answer.')
         if error:
             st.warning(error)
             st.code('ollama serve', language='powershell')
@@ -158,6 +266,7 @@ def render_intelligence(overview):
             st.code('ollama pull qwen3-embedding:0.6b', language='powershell')
         if client.base_url != 'http://127.0.0.1:11434':
             st.caption('Article passages are sent to the configured model endpoint: ' + client.base_url)
+        _compute_status(client.base_url, model, embedding_model)
 
     if model != 'qwen3:8b':
         overview = library_overview(model, ANALYSIS_VERSION)
@@ -168,7 +277,7 @@ def render_intelligence(overview):
         return
     st.html('<div class="quiet-status">'
             f'<span class="status-dot" style="background:var(--{"positive" if ready else "subtle"})"></span>'
-            f'{"Local model connected" if ready else "Model offline"} &nbsp; / &nbsp; '
+            f'{"Answer model available" if ready else "Model service unavailable" if error else "Choose an installed answer model"} &nbsp; / &nbsp; '
             f'{overview["analyzed"]:,} current saved analyses in your library</div>')
 
     collection_options = collections()
@@ -245,6 +354,7 @@ def render_intelligence(overview):
     pagination(result, 'research')
     if not items:
         empty_state('No matching sources', 'Try a different keyword, publisher, or topic.')
+        _show_research_result()
         return
 
     ask_tab, insights_tab = st.tabs(['Ask library', 'Saved insights'])
@@ -264,7 +374,8 @@ def render_intelligence(overview):
         candidates = library_page(page_size=100, **filters)['items'] if all_matches and result['total'] <= 100 else items
         research_ids = selected_ids or [article['id'] for article in candidates]
         st.caption(f"This question will search {len(research_ids):,} articles out of {overview['total']:,} in your library. Other articles are outside this answer's scope.")
-        scope = (model, embedding_model, tuple(research_ids), overview['revision'], client.base_url)
+        scope = (model, embedding_model, tuple(research_ids), overview['revision'], client.base_url,
+                 CONTEXT_POLICY_VERSION)
         with st.form('article_question'):
             question = st.text_area('Research question', max_chars=2000, height=110,
                                     placeholder='What are the main findings across these selected articles?')
@@ -282,7 +393,6 @@ def render_intelligence(overview):
                           and previous.get('action') == action
                           and previous['result']['question'] == question.strip())
         if submitted and not reused:
-            st.session_state.pop('ai_research', None)
             try:
                 if action == 'Answer with citations' and not ready:
                     raise IntelligenceError('Choose an installed analysis model in Research settings.')
@@ -291,17 +401,24 @@ def render_intelligence(overview):
                 with st.spinner('Reading the relevant passages...'):
                     if action == 'Search passages':
                         trace = {}
-                        answer = dict(question=question.strip(), passages=semantic_search(
+                        answer = dict(question=question.strip(), model=embedding_model, passages=semantic_search(
                             question, selected_articles, embedding_model, client, stats=trace), retrieval=trace)
                     else:
                         answer = answer_question(question, selected_articles, model, embedding_model, client)
-                    answer['elapsed_seconds'] = perf_counter() - started
+                    answer = dict(answer, elapsed_seconds=perf_counter() - started,
+                        completed_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                        source_scope=dict(selected_article_ids=list(research_ids),
+                            searched_article_ids=[article['id'] for article in selected_articles],
+                            source_fingerprints={article['id']: article_fingerprint(article) for article in selected_articles},
+                            library_revision=overview['revision'], mode=action, embedding_model=embedding_model,
+                            context_policy=CONTEXT_POLICY_VERSION if action == 'Answer with citations' else None))
                     st.session_state['ai_research'] = dict(scope=scope, result=answer, action=action)
+                    st.session_state.pop('ai_research_error', None)
             except IntelligenceError as exc:
-                st.error(str(exc))
-        research = st.session_state.get('ai_research')
-        if research and research['scope'] == scope:
-            _research_answer(research['result'], reused)
+                st.session_state['ai_research_error'] = dict(scope=scope, message=str(exc))
+        elif submitted and reused:
+            st.session_state.pop('ai_research_error', None)
+        _show_research_result(scope, reused)
 
     with insights_tab:
         heading, analyze = st.columns([3, 1], vertical_alignment='center')

@@ -140,6 +140,8 @@ def _review_context(output, phase):
                 reading_hash = digest(body)
         evidence['reading_sha256'] = reading_hash
         evidence.update(extraction_sha256=report['extraction_sha256'], diagnostics_sha256=report['diagnostics_sha256'], mode=report['mode'])
+        if 'cleanup_sha256' in report:
+            evidence['cleanup_sha256'] = report['cleanup_sha256']
         expected[case['id']] = dict(case, status=row['status'], reading_available=reading_hash is not None,
                                     evidence_sha256=digest(json.dumps(evidence, sort_keys=True).encode()))
     return manifest, report, expected
@@ -409,25 +411,29 @@ def evaluate(options):
     cache_lock, host_locks, paused = threading.Lock(), defaultdict(threading.Lock), {}
     report_path = output / (options.phase + '.json')
     engine_path = ROOT/'app/extract.py'
+    cleanup_sha256 = digest((ROOT/'app/article_cleanup.py').read_bytes())
     parse_document = extract_document
     if options.engine == 'frozen':
         engine_path = cache/'baseline-extract.py'
         original = json.loads((output/'initial-diagnostics.json').read_text(encoding='utf-8'))
         if options.phase != 'baseline' or digest(engine_path.read_bytes()) != original['extraction_sha256']:
             raise ValueError('Frozen engine must match the recorded original baseline source.')
+        if b'from app.article_cleanup import' in engine_path.read_bytes() and original.get('cleanup_sha256') != cleanup_sha256:
+            raise ValueError('Frozen engine cleanup dependency differs from its recorded baseline.')
         parse_document = runpy.run_path(str(engine_path))['extract_document']
     origin_path = output/'initial-diagnostics.json'
     original_failures = {row['id']: row for row in json.loads(origin_path.read_text(encoding='utf-8'))['results'] if row['status'] == 'failed'} if origin_path.exists() else {}
     report = dict(version=1, phase=options.phase, started_at=stamp(), mode=options.mode,
                   manifest_sha256=digest(manifest_bytes), extraction_sha256=digest(engine_path.read_bytes()),
                   diagnostics_sha256=digest((ROOT/'app/capture_quality.py').read_bytes()),
+                  cleanup_sha256=cleanup_sha256,
                   limitations=manifest['limitations'], results=[])
     if report_path.exists():
         if not options.resume:
             raise ValueError('Phase already exists; use --resume or a new phase name.')
         previous = json.loads(report_path.read_text(encoding='utf-8'))
-        for key in ('manifest_sha256', 'extraction_sha256', 'diagnostics_sha256', 'mode'):
-            if report[key] != previous[key]:
+        for key in ('manifest_sha256', 'extraction_sha256', 'diagnostics_sha256', 'cleanup_sha256', 'mode'):
+            if report[key] != previous.get(key):
                 raise ValueError('Cannot mix different source/code versions in one phase.')
         report = previous
     completed = {row['id'] for row in report['results']}

@@ -1,6 +1,6 @@
 # Artint: next-release plan
 
-Status: Milestone A locally validated; Milestone B review tooling delivered, human review pending. General analytics and research usability fixes are implemented locally. Updated: 2026-10-29.
+Status: Milestone A locally validated; extraction/research evaluation tooling, a private 60-case development proposal and an offline batch-review workbench are delivered. Model-status diagnostics, portable research briefs and last-result session recovery are implemented independently of retrieval. Saved-source coverage indicators and linked topic/publisher analytics are also delivered without inference. Human-approved gold data remains pending. Updated: 2026-11-02.
 
 Execution steering: follow A (Linux/Docker/installation), B (reviewed extraction/evaluation), C (evaluated retrieval and saved research), then a small evidence-backed comparison. The capability groups below retain the detailed methodology; they are not a commitment to implement all future work together. Milestone A evidence and remaining hosted-runner gates are in [validation](validation.md). Keep evaluation baselines frozen before subsequent behaviour changes.
 
@@ -20,7 +20,7 @@ The initial task is: collect several articles about one event or question, ident
 - Treat sample sizes, uncertainty, independent human review and answer coverage as part of the evaluation contract.
 - Develop provider adapters, MCP, feed monitoring and richer archiving only after the main workflow is measured.
 
-Existing work should be retained: transactional schema migrations through version 6, migration backups, article FTS5, embedding caching, portable merge restore, bounded browser capture and selected-import job state. The initial public baseline had 196 tests and a successful first Windows CI run. The latest local Windows checkpoint has 231 passing tests and one opt-in installation test skipped; the expanded hosted workflow is pending. These checks do not establish retrieval or answer quality.
+Existing work should be retained: transactional schema migrations through version 6, migration backups, article FTS5, embedding caching, portable merge restore, bounded browser capture and selected-import job state. The initial public baseline had 196 tests and a successful first Windows CI run. The latest local Windows checkpoint has 404 passing tests and one opt-in installation test skipped; 159 targeted research/gold-authoring/diagnostic/export tests also passed in the existing Ubuntu/WSL2 Python 3.13 environment, with one opt-in browser test skipped. The expanded hosted workflow and new Docker test image remain unverified. These checks do not establish retrieval or answer quality.
 
 Current delivery checkpoints:
 
@@ -28,10 +28,12 @@ Current delivery checkpoints:
 | --- | --- | --- |
 | A: installation and portability | Locally checked on Windows, Ubuntu/WSL2 x86_64 and Linux Docker | Expanded hosted CI; unsupported platforms remain explicit |
 | B: extraction review tooling | Prospective freeze, phase/hash-bound reviews, eligibility and disagreement reports implemented | New eligible cohort, actual human labels/double review and research evaluation cases |
+| Research evaluation foundation | Versioned gold-span corpus, 24-case original diagnostic fixture, isolated existing-pipeline runs, review packets and paired reports | Reviewed development/held-out data, independent support judgments and broader live-model measurements |
+| Development gold authoring | Private 60-case machine proposal, consolidated AI-assisted corrections and offline case/batch review tools prepared | Human case/absence/family review, independent double review and a newly frozen approved development corpus; remaining sources are not a cleared held-out set |
 | General analytics and research usability | General/specialist separation, contextual filters, article handoff, readable previews/citations and bounded cache optimizations implemented | New changes need Linux/Docker revalidation; no answer-quality claim |
 | C: evaluated retrieval and saved research | Planned | Reviewed baseline before hybrid ranking changes; durable sessions and immutable evidence |
 
-Session reuse of the last answer is not a delivered persistent-research milestone. The cache/batching changes preserve passage construction, ranking, model defaults and generation budgets; the reviewed evaluation sequence remains in force. See [unreleased changes](../CHANGELOG.md) and [milestones](../milestones.md) for implementation evidence.
+Session reuse of the last answer is not a delivered persistent-research milestone. Cache/batching changes preserve passage construction, ranking, model defaults and output budgets. A subsequent user-authorized context policy selects 8K/16K with checked non-truncating requests and retained run metadata; it is a new candidate configuration pending human quality comparison, with fixed-16K snapshots preserved. The reviewed evaluation sequence remains in force. See [unreleased changes](../CHANGELOG.md) and [milestones](../milestones.md) for implementation evidence.
 
 A single initial import commit is normal. Use meaningful commits and release notes going forward; do not manufacture a historical commit sequence. Maintain the unreleased changelog and publish a tag only when its documented release scope passes its gates.
 
@@ -49,6 +51,8 @@ These are feature/workflow references, not measured performance rankings. [Karak
 ## Phase 1: reproducible evaluation and baseline
 
 Deliver the evaluation contract before changing the current chunking, semantic search, prompts or model defaults. Record the current source revision as the baseline, with a frozen corpus and configuration. Extend the existing extraction evaluator instead of creating a competing extraction-report format.
+
+Implementation checkpoint: the [research harness](research-evaluation.md) supplies the corpus contract, original 24-case diagnostic fixture, existing-pipeline runs, human atomic-review packets, paired reports and code/config/model snapshots. The next data step now has a private 60-case proposal and a browser workbench, with zero human approvals. It complements the extraction evaluator; actual human review/adjudication remains required. Proposals and diagnostic/three-case live smokes do not establish the targets below.
 
 Deliverables:
 
@@ -159,6 +163,6 @@ Exit: document what users could complete, where they failed and which change is 
 
 Milestone A is locally verified and stops at packaging, installation and sandboxed runtime checks. Expanded hosted CI still needs an authorized push; macOS is deferred rather than inferred from Docker.
 
-Milestone B's tooling is implemented in the existing evaluator. Its quality gate remains open: complete a prospectively declared eligible cohort, human labels and independent double review, then prepare the research evaluation cases and frozen baseline. The current diagnostic cohort has no completed human-reviewed eligible cases and cannot establish the extraction target. Build reviewed development evidence before changing extraction/retrieval behaviour. Keep corpus collection/annotation and implementation changes separately reviewable; never invent human labels or publish a quality rate from synthetic fixtures.
+Milestone B's extraction tooling and the research harness foundation are implemented. Quality gates remain open: complete a prospectively declared extraction cohort and human/double review, and author the reviewed development research cases before retrieval tuning. These review activities can proceed in parallel. The diagnostic extraction cohort has no completed human-reviewed eligible cases; the original research fixture is synthetic. Neither establishes the targets. Keep corpus collection/annotation and implementation changes separately reviewable; never invent human labels or publish a quality rate from synthetic fixtures.
 
 Use small PRs with the problem, acceptance results, risks and migration effects. Record real evaluation results in the README only after the report exists; leave proposed targets visibly distinct. This plan does not schedule automatic commits, pushes, repository metadata changes or releases.

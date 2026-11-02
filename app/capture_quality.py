@@ -5,6 +5,7 @@ import unicodedata
 from datetime import date, timedelta
 
 from bs4 import BeautifulSoup
+from app.article_cleanup import VERSION as CLEANUP_VERSION, remove_publisher_promotions
 
 VERSION = '2'
 
@@ -177,6 +178,8 @@ def inspect_capture(article, html=None):
             'warning' if replacement_count >= 3 else 'info')
     if html:
         soup = BeautifulSoup(html, 'html.parser')
+        removed = remove_publisher_promotions(soup, article.get('url', ''))
+        evidence['cleanup'] = {'version': CLEANUP_VERSION, 'publisher_promotion_blocks_removed': removed}
         if not soup.title and not soup.find('h1'):
             add('missing_title', 'No page title or headline was found; the saved title may be a fallback.')
         reference = body_reference(soup)

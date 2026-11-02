@@ -15,7 +15,7 @@ python scripts/evaluate_extraction.py --output output/evaluations/my-cohort --ph
 
 The first command creates a versioned manifest containing protocol and source-list fingerprints without fetching anything. It refuses an existing manifest or capture phase. The second command explicitly captures sources using the existing policy-compliant evaluator. It never creates article-library records or PDFs. Phase captures, diagnostics and locally permitted HTML/readings remain under that output directory. The 128 MB cache budget still applies; 500 candidates is a limit, not a promise that every reading copy fits.
 
-Use `--offline --mode html` to replay available frozen responses without network/browser requests. Paired extraction changes must use the same manifest and cached responses; retain failures that have no response to replay. The legacy `--freeze --audit ...` command remains available for historical diagnostics and does not create a prospective cohort.
+Use `--offline --mode html` to replay available frozen responses without network/browser requests. Paired extraction changes must use the same manifest and cached responses; retain failures that have no response to replay. The legacy `--freeze --audit ...` command remains available for historical diagnostics and does not create a prospective cohort. New phase reports also fingerprint `app/article_cleanup.py`; same-phase resume rejects a changed or missing cleanup hash, and frozen extractors importing that helper require its recorded version. New review evidence includes this dependency; historical reports and their existing review fingerprints remain unchanged. Start a separate phase to evaluate the cleanup change.
 
 ## Prepare an immutable-snapshot review
 

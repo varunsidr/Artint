@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from app import storage
+from app.capture_quality import VERSION as CAPTURE_VERSION
 from app.facets import ENTITIES, LENSES
 from app.text_preview import plain_excerpt
 
@@ -74,10 +75,53 @@ def collection_audit(collection_id):
                 quality=data.get('quality_policy', ''))
 
 
-def snapshot(filters):
+def _coverage_details(con, sql, parameters, topics, publishers, as_of):
+    """Aggregates over the complete filtered selection; no source bodies loaded."""
+    end = date.fromisoformat(as_of)
+    start, prior_start, prior_end = end - timedelta(days=29), end - timedelta(days=59), end - timedelta(days=30)
+    checked = """CASE WHEN json_valid(a.quality_json) THEN
+        CASE WHEN json_extract(a.quality_json,'$.version')=?
+            AND json_extract(a.quality_json,'$.status') IN ('checks_passed','needs_review')
+        THEN 1 ELSE 0 END ELSE 0 END"""
+    flagged = """CASE WHEN json_valid(a.quality_json) THEN
+        CASE WHEN json_extract(a.quality_json,'$.version')=?
+            AND json_extract(a.quality_json,'$.status')='needs_review'
+        THEN 1 ELSE 0 END ELSE 0 END"""
+    health = dict(con.execute('''SELECT
+        COALESCE(SUM(CASE WHEN date(a.published) BETWEEN ? AND ? THEN 1 ELSE 0 END),0) AS recent,
+        COALESCE(SUM(CASE WHEN date(a.published) BETWEEN ? AND ? THEN 1 ELSE 0 END),0) AS previous,
+        COALESCE(SUM(CASE WHEN length(trim(COALESCE(a.author,'')))>0 THEN 1 ELSE 0 END),0) AS with_author,
+        COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(s.insight_json,'$.topics') j
+            WHERE j.type='text' AND length(j.value)>0) THEN 1 ELSE 0 END),0) AS with_topics,
+        COALESCE(SUM(''' + checked + '),0) AS checked,COALESCE(SUM(' + flagged + '),0) AS flagged '
+        + sql, [start.isoformat(), as_of, prior_start.isoformat(), prior_end.isoformat(),
+                CAPTURE_VERSION, CAPTURE_VERSION, *parameters]).fetchone())
+    health['momentum'] = dict(start=start.isoformat(), end=as_of,
+        previous_start=prior_start.isoformat(), previous_end=prior_end.isoformat(),
+        current=health.pop('recent'), previous=health.pop('previous'))
+    top_topics, top_sources = topics[:6], [publisher['name'] for publisher in publishers[:5]]
+    before_where, separator, after_where = sql.partition(' WHERE ')
+    cells, reach = [], {}
+    if top_topics and top_sources:
+        topic_names = [topic['name'] for topic in top_topics]
+        suffix = ((separator + after_where + ' AND ') if separator else ' WHERE ') + (
+            "j.type='text' AND j.value IN (" + ','.join('?' for _ in topic_names) + ')')
+        joined = before_where + " JOIN json_each(s.insight_json,'$.topics') j" + suffix
+        reach = dict(con.execute('SELECT j.value,COUNT(DISTINCT a.publisher_key) ' + joined
+            + ' GROUP BY j.value', [*parameters, *topic_names]).fetchall())
+        cells = [dict(topic=row[0], source=row[1], count=row[2]) for row in con.execute(
+            'SELECT j.value,a.publisher_key,COUNT(DISTINCT a.id) ' + joined
+            + ' AND a.publisher_key IN (' + ','.join('?' for _ in top_sources) + ')'
+            + ' GROUP BY j.value,a.publisher_key', [*parameters, *topic_names, *top_sources])]
+    return dict(health=health, topic_coverage=dict(
+        topics=[dict(topic, publishers=reach.get(topic['name'], 0)) for topic in top_topics],
+        sources=top_sources, cells=cells))
+
+
+def snapshot(filters, *, as_of=None):
     investment = filters['mode'] == 'investment'
     audit = collection_audit(filters['collection'])
-    as_of = audit['as_of'] if investment and audit else date.today().isoformat()
+    as_of = audit['as_of'] if investment and audit else as_of or date.today().isoformat()
     base = _base_filters(filters, as_of)
     sql, parameters = storage._library_query(**base, include_facets=investment)
     before_where, separator, after_where = sql.partition(' WHERE ')
@@ -109,8 +153,10 @@ def snapshot(filters):
         matrix = [dict(entity=row[0], lens=row[1], count=row[2]) for row in con.execute('SELECT e.value,l.value,COUNT(*) '
             + before_where + " JOIN json_each(f.signals_json,'$.entities') e JOIN json_each(f.signals_json,'$.lenses') l"
             + where + ' GROUP BY e.value,l.value', parameters)] if investment else []
-        publishers = [dict(name=row[0], count=row[1]) for row in con.execute('SELECT a.publisher_key,COUNT(*) '
+        publishers = [dict(name=row[0], count=row[1], analyzed=row[2], latest=row[3]) for row in con.execute(
+            'SELECT a.publisher_key,COUNT(*),COUNT(s.article_id),MAX(date(a.published)) '
             + sql + ' GROUP BY a.publisher_key ORDER BY COUNT(*) DESC,a.publisher_key LIMIT 8', parameters)]
+        details = _coverage_details(con, sql, parameters, topics, publishers, as_of)
         dated_counts = [dict(month=row[0], count=row[1]) for row in con.execute('SELECT substr(a.published,1,7),COUNT(*) '
             + sql + (' AND ' if where else ' WHERE ') + 'date(a.published) IS NOT NULL'
             + ' GROUP BY substr(a.published,1,7) ORDER BY substr(a.published,1,7) DESC LIMIT 60', parameters)][::-1]
@@ -163,7 +209,7 @@ def snapshot(filters):
         controls_sql, controls_parameters = storage._library_query(collection_id=filters['collection'] or None)
         sources = [row[0] for row in con.execute('SELECT DISTINCT a.publisher_key ' + controls_sql
                                                 + ' ORDER BY a.publisher_key', controls_parameters)]
-    return dict(mode=filters['mode'], topics=topics, stats=stats,
+    return dict(mode=filters['mode'], topics=topics, stats=stats, **details,
                 timeline_granularity=granularity,
                 lenses=[dict(id=lens['id'], label=lens['label'], short=lens['short'],
                              count=lens_counts.get(lens['id'], 0)) for lens in LENSES] if investment else [],

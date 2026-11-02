@@ -18,7 +18,7 @@ Remove-Item Env:RUN_BROWSER_TESTS
 
 The expected remote is `https://github.com/varunsidr/Artint.git`. Check `git branch --show-current` before choosing the destination branch. If Git identity is missing, configure your own name and email locally; a GitHub-provided private email is optional. Repository preparation does not change Git author or authentication settings.
 
-The latest Windows checkpoint is 231 passed with the opt-in live-server installation test skipped. Use `scripts/validate_native.py` for a disposable installation/server check. `scripts/validate_container.py` needs a running Docker engine and uses its own temporary Compose project. See [validation](validation.md) for earlier platform checks and the later changes that still need revalidation. Source can be reviewed and pushed while explicitly marked work in progress; a release requires its own completed scope and verification.
+The latest Windows checkpoint is 286 passed with the opt-in live-server installation test skipped. The research/gold-authoring tools have separate targeted Ubuntu/WSL2 checks, not a full fresh-platform revalidation. Use `scripts/validate_native.py` for a disposable installation/server check. `scripts/validate_container.py` needs a running Docker engine and uses its own temporary Compose project. See [validation](validation.md) for earlier platform checks and later changes that still need revalidation. Source can be reviewed and pushed while explicitly marked work in progress; a release requires its own completed scope and verification.
 
 ## Stage and push the reviewed update
 

@@ -17,6 +17,12 @@
       <div class="obs-kpi"><span id="metric-third-label">Analyzed articles</span><strong id="metric-bubble">0</strong><small id="metric-third-note">Current saved analyses</small></div>
     </div>
   </div>
+  <div class="obs-signals" aria-label="Collection coverage indicators">
+    <article class="obs-signal"><span>Published · last 30 days</span><strong id="recent-volume">0</strong><p id="recent-comparison"></p><small id="recent-window"></small></article>
+    <article class="obs-signal"><span>Largest publisher share</span><strong id="leading-share">—</strong><p id="leading-publisher"></p><small id="concentration-note"></small></article>
+    <article class="obs-signal"><span>Analysis coverage</span><strong id="analysis-share">—</strong><p id="analysis-gap"></p><small>Current saved qwen3:8b analyses</small></article>
+    <article class="obs-signal"><span>Publication dates available</span><strong id="dated-share">—</strong><p id="dated-gap"></p><small>Undated articles stay outside the timeline</small></article>
+  </div>
   <div class="obs-grid obs-first-grid">
     <article class="obs-panel obs-timeline-panel"><div class="obs-panel-heading"><div><h3>How the coverage unfolds</h3><p id="timeline-note">Publication dates in this collection</p></div><span class="obs-small-tag" id="date-span"></span></div><div class="obs-timeline" id="timeline" aria-label="Publication activity"></div><div class="obs-chart-footer"><span id="timeline-hint">Click a date to focus the collection</span><button class="obs-text-button" id="clear-month" hidden>Clear date</button></div></article>
     <article class="obs-panel"><div class="obs-panel-heading"><div><h3 id="topics-heading">Topics in this collection</h3><p id="topics-note">Labels from current saved analyses</p></div></div><div class="obs-lens-list" id="lenses" aria-label="Coverage lenses"></div><div class="obs-lens-list" id="topics" aria-label="Saved analysis topics"></div></article>
@@ -25,6 +31,10 @@
     <article class="obs-panel" id="investment-panel"><div class="obs-panel-heading"><div><h3>Companies in the conversation</h3><p>Articles mentioning a company and a coverage lens</p></div><span class="obs-small-tag">Select a cell to explore</span></div><div class="obs-matrix-wrap" id="matrix" aria-label="Company and coverage lens matrix"></div></article>
     <article class="obs-panel" id="general-panel"><div class="obs-panel-heading"><div><h3>Analysis &amp; reading profile</h3><p>See what is ready and where to explore next</p></div></div><div id="analysis-status" class="obs-profile-status" aria-label="Filter by analysis status"></div><div id="reading-profile" class="obs-publishers"></div><p id="reading-note" class="obs-footnote"></p></article>
     <article class="obs-panel"><div class="obs-panel-heading"><div><h3>Who’s contributing</h3><p>Publisher share of the current selection</p></div></div><select class="obs-source-select" id="publisher" aria-label="Filter analytics by publisher"></select><div id="publishers" class="obs-publishers"></div><div id="publisher-note" class="obs-footnote"></div></article>
+  </div>
+  <div class="obs-grid obs-research-grid" id="research-detail-grid">
+    <article class="obs-panel"><div class="obs-panel-heading"><div><h3>Topic coverage by publisher</h3><p>Compare saved analysis labels across your sources</p></div><span class="obs-small-tag">Select a count to inspect</span></div><div id="topic-coverage" class="obs-table-wrap" tabindex="0" role="region" aria-label="Topic coverage by publisher"></div><p id="topic-coverage-note" class="obs-footnote"></p></article>
+    <article class="obs-panel"><div class="obs-panel-heading"><div><h3>Collection readiness</h3><p>Metadata and capture checks for this selection</p></div></div><dl id="collection-health" class="obs-health"></dl><p class="obs-footnote">Capture checks flag copies to inspect. They do not establish factual accuracy or extraction completeness.</p></article>
   </div>
   <div class="obs-evidence-heading" id="evidence-heading"><div><h3>Passages worth inspecting</h3><p>Matched source language, not article stance or a fact check</p></div></div>
   <div class="obs-grid obs-evidence-grid" id="arguments"></div>

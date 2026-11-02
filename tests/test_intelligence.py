@@ -7,8 +7,9 @@ import requests
 
 from app import storage
 from app.intelligence import (
-    ANALYSIS_VERSION, MAX_ANALYSIS_CHARS, IntelligenceError, OllamaClient,
-    analyze_article, answer_question, article_passages, semantic_search,
+    ANALYSIS_VERSION, MAX_ANALYSIS_CHARS, CONTEXT_MARGIN, OUTPUT_TOKENS,
+    IntelligenceError, OllamaClient, analyze_article, answer_question,
+    article_passages, context_budget, semantic_search,
 )
 
 
@@ -28,7 +29,7 @@ def article():
 
 def response(content):
     result = Mock(status_code=200)
-    result.json.return_value = {'done': True, 'message': {'content': json.dumps(content)}}
+    result.json.return_value = {'version': '0.40.11', 'done': True, 'message': {'content': json.dumps(content)}}
     return result
 
 
@@ -43,7 +44,7 @@ def test_analysis_is_saved_and_reused_without_another_model_call(article):
         first = analyze_article(article, 'local-model')
         second = analyze_article(article, 'local-model')
     assert first == second
-    assert request.call_count == 1
+    assert sum(call.args[1].endswith('/api/chat') for call in request.call_args_list) == 1
     assert first['partial'] is False
 
 
@@ -213,3 +214,129 @@ def test_intermediate_embedding_failure_does_not_cache_missing_vectors(article):
     semantic_search('evidence', articles, 'embedding', client, stats=stats)
     assert stats['embeddings_reused'] == 16 and stats['embeddings_created'] == 17
     assert client.embed.call_args_list[-1].kwargs['keep_alive'] == 0
+
+
+def test_context_budget_boundary_and_schema_unicode_bytes():
+    available = 8192 - OUTPUT_TOKENS - CONTEXT_MARGIN
+    assert context_budget([{'content': 'x' * (available * 3)}])['context_window'] == 8192
+    assert context_budget([{'content': 'x' * (available * 3 + 1)}])['context_window'] == 16384
+    assert context_budget([{'content': '界' * 7000}])['context_window'] == 16384
+
+
+SIMPLE_SCHEMA = dict(type='object', properties={'value': {'type': 'integer'}}, required=['value'])
+
+
+def runtime_response(version='0.40.11'):
+    reply = Mock(status_code=200)
+    reply.json.return_value = {'version': version}
+    return reply
+
+
+def context_error_reply(status=400):
+    reply = Mock(status_code=status)
+    reply.json.return_value = {'error': 'request (9000 tokens) exceeds the available context size (8192 tokens), try increasing it'}
+    return reply
+
+
+def test_small_request_uses_8k_with_output_reserve_and_no_truncation():
+    client = OllamaClient()
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), response({'value': 42}),
+                                                              response({'value': 43})]) as request:
+        assert client.generate('qwen3:8b', 'Small question', SIMPLE_SCHEMA) == {'value': 42}
+        assert client.generate('qwen3:8b', 'Another question', SIMPLE_SCHEMA) == {'value': 43}
+    assert request.call_count == 3  # Runtime capability floor checked once per client.
+    payload = request.call_args.kwargs['json']
+    assert payload['options'] == dict(temperature=0, num_ctx=8192, num_predict=1600)
+    assert payload['truncate'] is False and payload['shift'] is False and payload['think'] is False
+    assert client.last_generation['context_window'] == 8192
+
+
+def test_large_schema_is_counted_even_for_a_short_question():
+    schema = dict(type='object', properties={'value': {'type': 'string', 'enum': ['x' * 24000]}}, required=['value'])
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), response({'value': 'x' * 24000})]) as request:
+        OllamaClient().generate('chat', 'Small question', schema)
+    assert request.call_args.kwargs['json']['options']['num_ctx'] == 16384
+
+
+@pytest.mark.parametrize('status', [200, 400, 413, 500])
+def test_underestimated_request_retries_complete_prompt_once_at_16k(status):
+    client = OllamaClient()
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), context_error_reply(status),
+                                                              response({'value': 42})]) as request:
+        assert client.generate('chat', 'Original evidence: 日本語 😀', SIMPLE_SCHEMA) == {'value': 42}
+    first, second = [call.kwargs['json'] for call in request.call_args_list[1:]]
+    assert [first['options']['num_ctx'], second['options']['num_ctx']] == [8192, 16384]
+    assert first['messages'] == second['messages'] and first['format'] == second['format']
+    assert first['messages'][1]['content'].startswith('Original evidence: 日本語 😀')
+    assert client.last_generation['attempts'][0]['status'] == 'context_exceeded'
+    assert client.last_generation['context_window'] == 16384
+
+
+def test_actual_token_count_can_expand_context_to_preserve_answer_space():
+    reply = response({'value': 42})
+    reply.json.return_value.update(prompt_eval_count=7000, eval_count=5)
+    client = OllamaClient()
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply, reply]):
+        assert client.generate('chat', 'Underestimated input', SIMPLE_SCHEMA) == {'value': 42}
+    assert client.last_generation['context_window'] == 16384
+    assert client.last_generation['prompt_tokens'] == 7000
+    assert client.last_generation['attempts'][0]['status'] == 'insufficient_output_room'
+
+
+@pytest.mark.parametrize('overflow', [True, False])
+def test_16k_limit_fails_without_saving_or_dropping_sources(article, overflow):
+    reply = context_error_reply() if overflow else response(analysis_result(article))
+    if not overflow:
+        reply.json.return_value.update(prompt_eval_count=15500)
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply, reply]) as request:
+        with pytest.raises(IntelligenceError, match='16K'):
+            analyze_article(article, 'chat')
+    assert request.call_count == 3
+    assert storage.load_insight(article, 'chat', ANALYSIS_VERSION) is None
+
+
+@pytest.mark.parametrize('kind', ['network', 'invalid_citation', 'output_limit', 'server'])
+def test_non_context_failures_are_not_retried_at_a_larger_context(article, kind):
+    reply = response(analysis_result(article))
+    if kind == 'network':
+        reply = requests.Timeout()
+    elif kind == 'invalid_citation':
+        invalid = analysis_result(article)
+        invalid['summary']['sources'] = ['invented:P1']
+        reply = response(invalid)
+    elif kind == 'output_limit':
+        reply.json.return_value.update(done_reason='length')
+    else:
+        reply.status_code = 500
+        reply.json.return_value = {'error': 'model load failed: insufficient memory'}
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply]) as request:
+        with pytest.raises(IntelligenceError):
+            analyze_article(article, 'chat')
+    assert request.call_count == 2
+    assert storage.load_insight(article, 'chat', ANALYSIS_VERSION) is None
+
+
+@pytest.mark.parametrize('version', ['0.40.10', '0.12.0', 'unknown', None])
+def test_unverified_runtime_does_not_silently_ignore_context_controls(version):
+    with patch('app.intelligence.requests.request', return_value=runtime_response(version)) as request:
+        with pytest.raises(IntelligenceError, match='0.40.11'):
+            OllamaClient().generate('chat', 'question', SIMPLE_SCHEMA)
+    assert request.call_count == 1
+
+
+def test_saved_analysis_and_research_trace_include_actual_context(article):
+    reply = response(analysis_result(article))
+    reply.json.return_value.update(prompt_eval_count=240, eval_count=60)
+    client = OllamaClient()
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply]):
+        saved = analyze_article(article, 'chat', client)
+    assert saved['generation']['context_window'] == 8192
+    assert saved['generation']['prompt_tokens'] == 240
+    client.embed = Mock(return_value=[[1., 1.], [1., 1.]])
+    claim = {'text': 'Reported glass research.', 'sources': [article_passages(article)[0]['id']]}
+    reply = response({'supported': True, 'claims': [claim]})
+    reply.json.return_value.update(prompt_eval_count=350, eval_count=35)
+    with patch('app.intelligence.requests.request', return_value=reply):
+        answer = answer_question('What is reported?', [article], 'chat', 'embed', client)
+    assert answer['generation']['prompt_tokens'] == 350
+    assert answer['generation']['context_window'] == 8192

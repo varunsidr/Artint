@@ -203,6 +203,67 @@ export default function (component) {
   q('#metric-third-label').textContent = investment ? 'Bubble language' : 'Analyzed articles';
   q('#metric-third-note').textContent = investment ? 'Articles mentioning the debate' : 'Current saved analyses · qwen3:8b';
   q('#metric-articles-note').textContent = selectedCollection ? 'of ' + count(selectedCollection.articles) + ' in this collection' : '';
+  const total = view.stats.articles, health = view.health, momentum = health.momentum;
+  const share = (amount, denominator = total) => denominator ? Math.round(amount / denominator * 100) + '%' : '—';
+  counter('#recent-volume', momentum.current);
+  const change = momentum.previous ? Math.round((momentum.current - momentum.previous) / momentum.previous * 100) : null;
+  q('#recent-comparison').textContent = change === null ?
+    `${count(momentum.previous)} in the prior 30 days · no percentage baseline` :
+    `${change > 0 ? '+' : ''}${change}% vs ${count(momentum.previous)} in the prior 30 days`;
+  q('#recent-window').textContent = `${date(momentum.start)} – ${date(momentum.end)} · within current filters`;
+  const leading = view.publishers[0];
+  q('#leading-share').textContent = leading ? share(leading.count) : '—';
+  q('#leading-publisher').textContent = leading ? `${leading.name} · ${count(leading.count)} articles` : 'No publishers in this selection';
+  q('#concentration-note').textContent = total ? `Top ${Math.min(3, view.stats.publishers)} publishers account for ${share(view.publishers.slice(0, 3).reduce((sum, row) => sum + row.count, 0))} of saved articles` : 'Based on saved publisher labels';
+  q('#analysis-share').textContent = share(view.stats.analyzed);
+  q('#analysis-gap').textContent = `${count(total - view.stats.analyzed)} articles awaiting analysis`;
+  q('#dated-share').textContent = share(total - view.stats.undated);
+  q('#dated-gap').textContent = `${count(view.stats.undated)} articles without a usable date`;
+  q('#collection-health').replaceChildren(...[
+    ['Author recorded', health.with_author],
+    ['Saved topic labels', health.with_topics],
+    ['Capture checks recorded', health.checked],
+    ['Capture flags to inspect', health.flagged],
+    ['Capture checks unavailable', total - health.checked],
+  ].map(([label, amount]) => {
+    const row = make('div'); row.append(make('dt', '', label), make('dd', '', count(amount) + ' / ' + count(total))); return row;
+  }));
+  const coverage = view.topic_coverage;
+  q('#research-detail-grid').hidden = investment;
+  if (!coverage.topics.length) {
+    q('#topic-coverage').replaceChildren(make('p', 'obs-topic-empty', total ? 'Analyze some of these articles in Research to compare their saved topic labels across publishers.' : 'No articles match these filters.'));
+  } else {
+    const table = make('table', 'obs-coverage-table');
+    table.setAttribute('aria-label', 'Saved topic labels by publisher');
+    const head = make('thead'), header = make('tr');
+    const corner = make('th', '', 'Topic'); corner.scope = 'col'; header.append(corner);
+    coverage.sources.forEach(source => {
+      const cell = make('th'), button = make('button', 'obs-table-label', source);
+      cell.scope = 'col'; button.dataset.source = source;
+      button.setAttribute('aria-label', 'Focus publisher: ' + source); cell.append(button); header.append(cell);
+    });
+    head.append(header); const body = make('tbody');
+    const lookup = new Map(coverage.cells.map(cell => [JSON.stringify([cell.topic, cell.source]), cell.count]));
+    coverage.topics.forEach(topic => {
+      const row = make('tr'), label = make('th'), button = make('button', 'obs-table-label', topic.name);
+      label.scope = 'row'; button.dataset.topic = topic.name; button.setAttribute('aria-label', 'Focus topic: ' + topic.name);
+      label.append(button, make('small', '', count(topic.publishers) + ' publishers in selection')); row.append(label);
+      coverage.sources.forEach(source => {
+        const amount = lookup.get(JSON.stringify([topic.name, source])) || 0;
+        const cell = make('td'), mark = make('button', 'obs-coverage-count', amount ? count(amount) : '—');
+        mark.dataset.comparison = 'true'; mark.dataset.topic = topic.name; mark.dataset.source = source;
+        mark.disabled = !amount; mark.style.setProperty('--cell-strength', (10 + amount / Math.max(1, topic.count) * 24) + '%');
+        mark.setAttribute('aria-label', `${topic.name}, ${source}: ${count(amount)} articles`);
+        mark.setAttribute('aria-pressed', String(root._filters.topic === topic.name && root._filters.source === source));
+        describe(mark, {label: topic.name + ' · ' + source, value: count(amount) + ' articles',
+          detail: 'Current saved analyses with this topic label. A missing label does not establish missing reporting.', hint: 'Select to inspect these saved sources'});
+        cell.append(mark); row.append(cell);
+      });
+      body.append(row);
+    });
+    table.append(head, body); q('#topic-coverage').replaceChildren(table);
+  }
+  q('#topic-coverage-note').textContent = `Up to 6 topics × 5 leading publishers · ${count(health.with_topics)} of ${count(total)} articles have saved labels. Counts may overlap; labels do not establish agreement or a publisher's omissions.`;
   q('#scope-status').textContent = investment ? `${count(view.stats.indexed)} sources with inspectable coverage signals` : 'Saved-source analytics · no model call required';
   q('#date-span').textContent = view.stats.earliest ? `${date(view.stats.earliest)} – ${date(view.stats.latest)}` : 'No dated sources';
   const audit = view.audit;
@@ -215,6 +276,8 @@ export default function (component) {
     `Topics are model-generated labels from current saved qwen3:8b analyses. Up to 8 labels are shown; labels may overlap and are not verified facts. ${count(view.stats.articles - view.stats.analyzed)} articles in this view have no current analysis and contribute no topic labels.`,
     `${count(view.stats.undated)} articles have no usable publication date and are excluded from the timeline. Short date ranges use daily counts; longer ranges show up to the latest 60 months, including empty months. Reading times are estimates at 220 words per minute.`,
   ];
+  noteParagraphs.push(`Publication momentum compares ${date(momentum.start)}–${date(momentum.end)} with ${date(momentum.previous_start)}–${date(momentum.previous_end)}, within every active filter. It counts saved articles by publication date, not total web coverage or the rate of new imports. Date filters can restrict either comparison window. A zero prior count has no percentage baseline.`);
+  noteParagraphs.push('Publisher concentration uses saved source labels, not corporate ownership, editorial independence or political diversity. Capture checks describe automated reading-copy diagnostics; unrecorded checks are unknown. No model runs when these analytics open.');
   if (audit) {
     const summary = audit.summary || {}, statuses = summary.statuses || {};
     noteParagraphs.push(`Collection audit: ${count(summary.saved)} sources saved from ${count(summary.attempted)} candidates checked; ${count(statuses.failed)} fetch/extraction failures, ${count(statuses.unsupported)} unsupported pages, ${count(statuses.duplicate)} duplicates, and ${count(statuses.quality_rejected)} pages excluded in the source-type audit. Public HTML only; robots rules and access restrictions respected.`);
@@ -411,6 +474,10 @@ export default function (component) {
       detail: `${percent(publisher.count)}% of the current selection.`, hint: 'Click to focus this publisher' });
     button.querySelector('.obs-publisher-label').lastElementChild.textContent = count(publisher.count);
     button.querySelector('i').style.transform = `scaleX(${publisher.count / Math.max(1, view.stats.articles)})`;
+    let metadata = button.querySelector('.obs-publisher-meta');
+    if (!metadata) { metadata = make('div', 'obs-publisher-meta'); button.append(metadata); }
+    metadata.replaceChildren(make('span', '', `${share(publisher.count)} of selection · ${share(publisher.analyzed, publisher.count)} analyzed`),
+      make('span', '', publisher.latest ? 'Latest ' + date(publisher.latest) : 'No publication dates'));
     return button;
   });
   reconcile(q('#publishers'), publishers);
@@ -465,6 +532,11 @@ export default function (component) {
     const clear = target.closest('[data-clear]');
     if (clear) { commit({ [clear.dataset.clear]: clear.dataset.clear === 'period' ? 'all' : clear.dataset.clear === 'status' ? 'All articles' : '' }); return; }
     if (target.closest('[data-reset]')) { commit({ query: '', source: '', period: 'all', lens: '', entity: '', month: '', day: '', topic: '', status: 'All articles' }); return; }
+    const comparison = target.closest('[data-comparison]');
+    if (comparison) {
+      const same = root._filters.topic === comparison.dataset.topic && root._filters.source === comparison.dataset.source;
+      commit({ topic: same ? '' : comparison.dataset.topic, source: same ? '' : comparison.dataset.source }); return;
+    }
     const topic = target.closest('[data-topic]');
     if (topic) { commit({ topic: root._filters.topic === topic.dataset.topic ? '' : topic.dataset.topic }); return; }
     const status = target.closest('[data-status]');

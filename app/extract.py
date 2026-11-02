@@ -13,6 +13,7 @@ from urllib.robotparser import RobotFileParser
 import requests
 import trafilatura
 from bs4 import BeautifulSoup, UnicodeDammit
+from app.article_cleanup import remove_publisher_promotions
 from app.capture_quality import error_code, explicit_metadata, inspect_capture, tokens
 
 UA = "ArticleIntelligenceStarter/0.1 (+local educational research)"
@@ -164,7 +165,10 @@ def _request_html(url):
     return body, final_url
 
 def _article_from_html(html, final_url, fetch_method='html'):
-    data = trafilatura.extract(html, url=final_url, output_format='json', with_metadata=True,
+    soup = BeautifulSoup(html, 'html.parser')
+    removed = remove_publisher_promotions(soup, final_url)
+    readable_html = str(soup) if removed else html
+    data = trafilatura.extract(readable_html, url=final_url, output_format='json', with_metadata=True,
                                include_links=True, include_images=True, include_tables=True, include_comments=False)
     if not data:
         raise IncompleteArticle('No readable article body could be extracted.')
@@ -172,7 +176,6 @@ def _article_from_html(html, final_url, fetch_method='html'):
     content = (info.get('text') or '').strip()
     if len(tokens(content)) < 80:
         raise IncompleteArticle('Extracted text is too short: fewer than 80 readable words or CJK characters. Check the original for an excerpt.')
-    soup = BeautifulSoup(html, 'html.parser')
     metadata, metadata_sources = explicit_metadata(soup)
     # Published metadata takes precedence over a heuristic date that may come
     # from an update timestamp or a neighbouring story. Other fields fill gaps.

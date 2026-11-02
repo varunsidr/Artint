@@ -1,8 +1,8 @@
 # Local installation and recovery
 
-Updated: 2026-10-29. Run commands from the repository folder containing `app/` and `requirements.txt`. Artint is a single-user local application. Ollama is optional; do not expose the unauthenticated app to other machines.
+Updated: 2026-10-31. Run commands from the repository folder containing `app/` and `requirements.txt`. Artint is a single-user local application. Ollama is optional; new AI generation requires Ollama 0.40.11 or newer for checked non-truncating context controls. Do not expose the unauthenticated app to other machines.
 
-See [validation](validation.md) for the environments actually checked. Native macOS, ARM64 and GPU configurations are not validated. Docker validation does not establish native support on its host OS.
+See [validation](validation.md) for the environments actually checked, including one native Windows RTX 5050 configuration. Native macOS, ARM64 and container GPU configurations are not validated. Docker validation does not establish native support on its host OS.
 
 ## Windows / PowerShell
 
@@ -18,6 +18,41 @@ py -3.13 -m venv .venv
 ```
 
 Open http://127.0.0.1:8501. No activation or PowerShell execution-policy change is needed. Auto capture also supports installed Chrome/Edge. The smoke check creates and removes its own synthetic library; it does not open your configured library.
+
+### Optional native Windows NVIDIA inference
+
+Install Ollama and the models listed in the README. Quit an already-running Ollama tray app/server, then run this once before starting Artint:
+
+```powershell
+.\scripts\start_ollama_gpu.ps1
+.\.venv\Scripts\python.exe -m streamlit run app/dashboard.py
+```
+
+The launcher discovers the NVIDIA GPU UUID and starts a hidden Ollama server on `127.0.0.1:11434`. It selects CUDA, disables Vulkan for that server, enables Flash Attention, defaults to the unquantized `f16` KV cache and limits concurrent requests to one. Artint separately selects 8K/16K generation context while retaining the model and 1,600-token output limit. Logs, the started PID and a `profile.json` manifest of requested settings are saved under ignored `output/ollama-gpu/`. Inspect the runner log for actual cache type and GPU placement; the manifest records requests, not proof that a backend honored them. The launcher does not stop existing servers, download models or alter persistent/parent environment settings. Ordinary Ollama tray launches do not inherit this project profile; use this launcher again after stopping the server or restarting Windows. If PowerShell blocks scripts, the equivalent process environment settings can be configured using the [official Ollama instructions](https://docs.ollama.com/faq#setting-environment-variables-on-windows); no execution-policy change is required by Artint.
+
+To explicitly test a quantized KV cache, quit the existing Ollama server and launch:
+
+```powershell
+.\scripts\start_ollama_gpu.ps1 -KvCacheType q8_0
+```
+
+Then select `qwen3.5:9b` in Research settings if it is installed. Changing the cache profile does not change Artint's default model. `q8_0` reduces KV-cache memory, not all model/runtime memory, and has a model/task-dependent precision tradeoff. It applies to all models loaded by that server, including embeddings; compare cited answers and retrieval as well as latency/GPU placement. See [Ollama's cache documentation](https://docs.ollama.com/faq#how-can-i-set-the-quantization-type-for-the-kv-cache). To return to the default profile, stop that server and run the launcher without `-KvCacheType` (or explicitly use `-KvCacheType f16`). The launcher accepts only `f16` and `q8_0`, overrides inherited cache settings for its child server, and leaves the parent environment unchanged. No 4K application fallback is introduced.
+
+On a machine with multiple NVIDIA GPUs, select the desired UUID explicitly:
+
+```powershell
+nvidia-smi --query-gpu=name,uuid --format=csv
+.\scripts\start_ollama_gpu.ps1 -GpuUuid 'GPU-replace-with-the-detected-uuid'
+```
+
+During generation or semantic search, inspect actual placement:
+
+```powershell
+ollama ps
+nvidia-smi
+```
+
+`ollama ps` reports GPU/CPU residency, rather than a speed guarantee. An empty list means no model is currently loaded; Artint requests embedding-model unload after the final batch to free memory for the answer model. GPU selection cannot guarantee an entire model fits in VRAM. On the checked 8 GB RTX 5050 laptop, `qwen3-embedding:0.6b` and `qwen3:8b` at 8K loaded entirely on CUDA; `qwen3:8b` at 16K offloaded 31 of 37 layers and retained some CPU work. The launcher does not force unsafe all-GPU allocation or quantize the KV cache. See the [adaptive-context checkpoint](validation.md#adaptive-context-checkpoint--2026-10-31), [earlier hardware checkpoint](validation.md#native-windows-nvidia-checkpoint--2026-10-30) and [Ollama GPU documentation](https://docs.ollama.com/gpu).
 
 ## Native Linux / Bash
 
@@ -145,6 +180,20 @@ Do not add `--volumes` to the normal shutdown unless intentionally deleting a ba
 PDFs are selectable-text reading copies with source links, not pixel-perfect archives. Capture respects access restrictions; free RSS discovery has provider terms and is not assumed licensed for commercial use. Never redistribute private backups or publisher captures with the source/image.
 
 ## Diagnostics and troubleshooting
+
+### Model readiness and residency checks
+
+The ordinary installation diagnostic does not contact Ollama. To explicitly check the configured model endpoint without inference:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check_install.py --ollama
+```
+
+Use `.venv/bin/python` on Linux. `--ollama-url` overrides `OLLAMA_BASE_URL`; `--chat-model` and `--embedding-model` select installed names to check. Run this separately from `--browser`, `--health-url` or `--apparmor-profile`. It reads only the [model inventory](https://docs.ollama.com/api/tags), [running-model metadata](https://docs.ollama.com/api/ps) and runtime version. No model is loaded/downloaded, no article text is sent, and no library/database is opened. Metadata requests have short timeouts, bounded response sizes and no redirects. Endpoint URLs with embedded credentials/query tokens are rejected.
+
+The CLI returns nonzero if the service/inventory is unavailable, selected models are missing or generation runtime compatibility cannot be established. Runtime compatibility follows the app's checked minimum. Installed-but-unloaded models can pass readiness; GPU residency is only available while models are loaded. A running-model API failure leaves residency unknown rather than pretending the model is on CPU. Readiness is metadata availability/compatibility, not a successful inference or quality benchmark.
+
+The same snapshot is available through **Research → Research settings → Check model status**, with a readable timestamp and theme-aware table. Refresh explicitly after loading/unloading models; switching the endpoint/selected models or refreshing model inventory clears the old snapshot. Mixed residency near 100% is displayed as `>99.9%`, and near zero as `<0.1%`, so rounding cannot imply a fully GPU/CPU placement. Memory residency is not GPU activity, speed, device identity or proof of cache precision. For a remote endpoint the report describes that server's metadata, not the client's RTX GPU. The API does not expose KV-cache precision; use actual runner logs for that check.
 
 - **Missing `.venv` executable:** run from the folder containing `app/`; create the virtual environment for that operating system first.
 - **Docker API unavailable:** start Docker Desktop/the daemon and select Linux containers.

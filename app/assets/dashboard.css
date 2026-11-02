@@ -27,6 +27,13 @@ body { background: var(--paper); color: var(--ink); }
 .sidebar-footer { margin: 28vh 10px 0; display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--muted); }
 .st-key-theme_switch { padding: 18px 11px 0; }
 .workspace-mark { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 50%; color: var(--link); font-family: Georgia, serif; font-size: 15px; }
+.compute-status { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); }
+.compute-status:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.compute-status table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 12px; }
+.compute-status th, .compute-status td { padding: 10px 12px; text-align: left; overflow-wrap: anywhere; }
+.compute-status th { color: var(--muted); background: var(--hover); font-weight: 500; }
+.compute-status td { border-top: 1px solid var(--line); }
+.compute-status td:nth-child(5), .compute-status td:nth-child(6) { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .breadcrumb { font-size: 10px; color: var(--subtle); letter-spacing: 1.4px; font-weight: 500; margin-bottom: 25px; }
 .breadcrumb span { color: var(--subtle); padding: 0 10px; }
 .page-heading { margin: 0; font-size: 31px; line-height: 1.2; letter-spacing: -1.1px; font-weight: 550; color: var(--ink); }

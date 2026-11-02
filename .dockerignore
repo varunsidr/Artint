@@ -13,6 +13,9 @@
 !scripts/check_install.py
 !scripts/smoke_install.py
 !scripts/evaluate_extraction.py
+!scripts/evaluate_research.py
+!scripts/research_eval/
+!scripts/research_eval/*.py
 !tests/
 !tests/**
 !.streamlit/

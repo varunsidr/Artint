@@ -50,6 +50,8 @@ COPY requirements-dev.txt ./
 RUN python -m pip install --no-cache-dir -r requirements-dev.txt && python -m pip check
 COPY tests/ ./tests/
 COPY scripts/evaluate_extraction.py ./scripts/
+COPY scripts/evaluate_research.py ./scripts/
+COPY scripts/research_eval/ ./scripts/research_eval/
 USER artint
 ENV RUN_BROWSER_TESTS=1
 HEALTHCHECK NONE

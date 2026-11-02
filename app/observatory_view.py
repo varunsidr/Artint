@@ -1,6 +1,7 @@
 """A linked analytics component with bounded server-side evidence queries."""
 import json
 import time
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
@@ -23,10 +24,11 @@ _observatory = st.components.v2.component(
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
-def _snapshot(database, revision, serialized_filters):
+def _snapshot(database, revision, serialized_filters, calendar_day):
     # The database path and mutation revision isolate cached results across local
     # libraries and invalidate them after content, collection, or facet changes.
-    return snapshot(json.loads(serialized_filters))
+    # Calendar day also invalidates publication windows without a library edit.
+    return snapshot(json.loads(serialized_filters), as_of=calendar_day)
 
 
 def render_analytics(overview):
@@ -38,7 +40,8 @@ def render_analytics(overview):
     state = st.session_state.get(COMPONENT_KEY, {})
     raw = state.get('filters', {}) if hasattr(state, 'get') else {}
     filters = clean_filters(raw, choices)
-    result = _snapshot(str(storage.DB.resolve()), overview['revision'], json.dumps(filters, sort_keys=True))
+    result = _snapshot(str(storage.DB.resolve()), overview['revision'], json.dumps(filters, sort_keys=True),
+                       date.today().isoformat())
     filters['page'] = result['page']
     request = raw.get('_request', 0) if isinstance(raw, dict) else 0
     request = request if isinstance(request, int) and 0 <= request < 10**9 else 0

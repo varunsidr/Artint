@@ -63,6 +63,8 @@ Short excerpts under 80 estimated reading units are rejected. Unicode words and 
 counted so unspaced articles are not rejected solely for lacking spaces. Explicit publisher publication
 metadata takes precedence over inferred dates; comments are excluded from new reading copies.
 
+New captures remove a recognized publisher-home/social/newsletter promotion template before saving text, PDFs or research evidence. Complete standalone blocks qualify; quotations, editorial discussion and mixed article paragraphs remain. Capture diagnostics record the cleanup version and removed-block count. This rule is intentionally narrow and does not remove every possible advertisement or related-story widget. Existing saved text/PDFs remain their original copies; pasting an already saved URL reuses that copy rather than reprocessing it.
+
 The Python Playwright package is included in requirements. Auto tries installed Chrome, then Edge,
 then Playwright Chromium. This Windows workspace has been checked with installed Chrome. If none is
 available, install Chromium in your virtual environment:
@@ -137,6 +139,22 @@ file creation on a local filesystem supporting hard links. Caught failures roll 
 files; crash-proof coordination across multiple app/CLI processes remains future operational work.
 
 Open **Analytics** for the **Research observatory**. **General analytics · any topic** is the default. Select your collection or search saved coverage to explore publication activity, publisher distribution, current-analysis counts, saved topics and reading lengths. Date spans up to 45 days use daily counts; longer spans show up to 60 months, including empty intervals. Topic/status/date clicks filter the notebook and CSV together. Labels come only from current saved `qwen3:8b` analyses; unanalyzed articles still contribute metadata charts and explicitly show missing labels. No model runs automatically. Text and labels support Unicode; generated labels depend on your saved model output and are not translated automatically.
+
+The coverage indicators and comparison panels add:
+
+| Field | What it measures |
+| --- | --- |
+| Published · last 30 days | Saved articles published in the 30 calendar days ending on the displayed date, compared with the adjacent prior 30 days. Every active filter applies to both periods; date filters can restrict either period. A zero prior count has no percentage baseline. This is saved publication volume, not web-wide growth or new-import volume. |
+| Largest publisher share | Leading publisher's article count divided by all articles in the selection, plus the share of the top three labels. Labels do not establish corporate ownership or editorial independence. |
+| Analysis coverage | Percentage with a current saved default-model analysis, with the missing count. |
+| Publication dates available | Percentage with a usable publication date; undated copies are listed separately. |
+| Publisher details | Each displayed publisher's share, percentage analyzed and latest saved publication date. Up to eight publishers are shown; the selector retains all source choices. |
+| Topic coverage by publisher | Up to six leading saved topic labels across five leading publishers. Each count uses distinct articles across the whole filtered selection. Select a nonzero count to filter by both topic and publisher; the notebook and CSV follow the same scope. Topic reach counts all publishers in the selection, including those outside the five columns. |
+| Collection readiness | Articles with recorded authors, saved topic labels, current capture checks, capture flags and unavailable checks. Unknown/stale checks are not counted as passed. Capture flags are automated diagnostics, not truth or completeness ratings. |
+
+Topic comparison appears in General analytics and uses current saved `qwen3:8b` labels. Missing labels are explicit; absence does not establish that a publisher omitted a subject, and matching labels do not establish agreement. Metadata fields work without a model. Calendar day is part of the analytics cache key so publication windows refresh on the next render after a date change. Light/dark themes, keyboard selection and contained horizontal table scrolling support narrow screens.
+
+This prioritizes article/source-volume patterns described by [Feedly trend analysis](https://docs.feedly.com/article/748-trend-analysis) and cross-source inspection described by [Ground News](https://ground.news/frequently-asked-questions). Artint's saved-source counts do not supply those services' bias, ownership or factuality classifications.
 
 Choose **AI investment coverage · specialist** to use the six English keyword lenses, tracked companies and concern/countercase passages. General mode hides these specialized categories and its source rows show saved topic labels instead. Analytics previews remove Markdown/image destinations; the stored source copy is unchanged.
 
@@ -247,7 +265,15 @@ collections above 100 articles: a persistent passage/vector index and background
 If the model finds insufficient evidence, the app
 shows that it cannot answer from the retrieved articles.
 
-Answer cards include expandable cited passages, with original-source links and saved text. Retrieval details show passages searched, embeddings reused/created and the original elapsed time. Submitting the same question, mode, source revision, models and endpoint reuses the last result in this session; select **Generate a fresh result** to run again. This is session reuse, not a persistent research history. Cache reads are batched and the embedding model remains loaded between input batches, then unloads after the final batch before answering. Model choice, context/output budgets and retrieval ranking are unchanged. Hardware/model latency and independently reviewed answer quality remain separate measurements.
+Answer cards include expandable cited passages, with original-source links and saved text. Retrieval details show passages searched, embeddings reused/created and the original elapsed time. Submitting the same question, mode, source revision, models, endpoint and context-policy version reuses the last result in this session; select **Generate a fresh result** to run again. This is session reuse, not a persistent research history. Cache reads are batched and the embedding model remains loaded between input batches, then unloads after the final batch before answering. Model choice, output budget and retrieval ranking are unchanged. Hardware/model latency and independently reviewed answer quality remain separate measurements.
+
+A failed new question keeps your last completed answer and its downloads. If the current source/model selection differs, the result is labelled as the previous completed result and shows its original scope/models. It also remains available when Ollama is offline or filters match no articles. **Clear research result** clears only this session answer and error; saved articles and analyses remain. Starting a new browser session or restarting the app can lose this session result, so download anything you want to keep.
+
+Use **Download research brief** for a Markdown answer with numbered citation links, original URLs and the exact cited saved passages. **Download full result** saves a versioned JSON snapshot with all retrieved passages and available model/context/retrieval metadata. New results also record the original UTC completion time, selected/searched article IDs, fingerprints of the loaded source copies, library revision, research mode and embedding model. Export time is separate from completion time. Markdown links normalize international domain names and encode Unicode paths; JSON preserves original URLs. Passage-search exports contain evidence without a generated answer; abstention exports explain the limited evidence. Exporting uses the current result without another model call or storage write, and the download does not rerun research. Claim/source markup is literal and unsafe links or missing citations prevent an incomplete export. These downloads are portable files, not an implemented persistent research-history feature or an independent fact check.
+
+Under **Research settings**, **Check model status** explicitly reads the selected endpoint's installed models, runtime and loaded memory placement. The table follows light/dark appearance and scrolls within its panel on narrow screens. Installed, not loaded and unavailable are distinct states. GPU percentages are model-memory residency, not GPU utilization; a model that has unloaded is not thereby a CPU model. The report is a timestamped snapshot; repeat the check to update it. No inference is performed. See [startup/compute diagnostics](installation.md#model-readiness-and-residency-checks) for the CLI and compatibility limits.
+
+New generation automatically chooses **8K or 16K context**, using an estimate that includes the system instructions, complete prompt and appended JSON schema, plus 1,600 output tokens and a 512-token margin. This is a UTF-8-based estimate, not exact model tokenization. The checked Ollama controls reject oversized input and disable context shifting. An 8K context failure, or reported input token count leaving too little answer space, retries the identical request at 16K; if 16K cannot fit, narrow the selection rather than accepting a shortened answer. Window changes can reload the model and add latency. New answers/analyses display their selected context and reported input token count; saved older analyses are retained. Generation requires **Ollama 0.40.11 or newer**, the oldest checked runtime; passage search and saved insights remain available separately. The 8K profile fit the checked RTX 5050 entirely, but other GPU memory use can change placement. No model, cache-precision or answer-quality improvement is assumed from this change.
 
 The repository does not include model weights. Install suitable models on your machine first, for example:
 
@@ -260,6 +286,8 @@ The app does not download models automatically. Requests go to `http://127.0.0.1
 by default; set `OLLAMA_BASE_URL` to use another Ollama server. Keep the default local
 address to process article text on your computer. No API key is needed.
 
+The embedding and answer models have different jobs: `qwen3-embedding:0.6b` creates search vectors; `qwen3:8b` writes cited answers. The [embedding model card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) describes a multilingual 1,024-dimensional model. We retain it as an efficient baseline for an 8 GB laptop; suitability for this collection still needs human-reviewed retrieval evaluation. A larger embedding model is a candidate to compare after that baseline, rather than an established quality improvement. Native Windows NVIDIA users can use the [CUDA launcher and placement checks](installation.md#optional-native-windows-nvidia-inference). CPU activity during research can include retrieval, storage and partially offloaded answer inference even when embedding inference runs entirely on the GPU.
+
 Insights and embeddings are cached in `data/articles.db`. Changed article content gets
 new embeddings and invalidates its saved summary; analysis models have separate caches.
 Long articles are analyzed up to 18,000 characters of complete passages and labeled
@@ -267,6 +295,8 @@ Long articles are analyzed up to 18,000 characters of complete passages and labe
 passages. Citations are validated against the passages sent to the model, but this does
 not prove that each claim is true or fully supported; review the displayed source text.
 Generated answers are research aids, not independent fact checks.
+
+For developer evaluation, use the separate [research harness](research-evaluation.md). It freezes source hashes/gold spans, calls the same retrieval/answer functions in an isolated cache, and creates reports plus pending human-review packets. Its 24 original fictional cases are machinery diagnostics, not established quality evidence. It does not change this UI or save product research sessions.
 
 The implementation uses Ollama's [structured chat outputs](https://docs.ollama.com/capabilities/structured-outputs)
 and [embedding API](https://docs.ollama.com/api/embed). The first model load and index build

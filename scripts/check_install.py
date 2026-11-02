@@ -52,13 +52,29 @@ async def browser_check():
             await browser.close()
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser', action='store_true', help='Launch a local blank browser; verify Linux sandbox status.')
     parser.add_argument('--health-url', help='Check an existing local Streamlit health endpoint only.')
     parser.add_argument('--apparmor-profile', action='store_true', help='Print a profile for the installed Chromium path; does not install or load it.')
-    args = parser.parse_args()
+    parser.add_argument('--ollama', action='store_true', help='Read model inventory, runtime compatibility and loaded GPU/CPU residency; no inference.')
+    parser.add_argument('--ollama-url', help='Model endpoint for --ollama; defaults to OLLAMA_BASE_URL or native loopback.')
+    parser.add_argument('--chat-model', default='qwen3:8b', help='Selected answer model checked with --ollama.')
+    parser.add_argument('--embedding-model', default='qwen3-embedding:0.6b', help='Selected search model checked with --ollama.')
+    args = parser.parse_args(argv)
     try:
+        if args.ollama:
+            if args.apparmor_profile or args.health_url or args.browser:
+                raise ValueError('Run --ollama separately from browser, AppArmor or Streamlit health checks.')
+            from app.model_health import inspect_ollama
+            report = inspect_ollama(args.ollama_url, chat_model=args.chat_model, embedding_model=args.embedding_model)
+            ok = report['answer_ready'] and report['search_ready']
+            print(json.dumps(dict(ok=ok, ollama=report, storage='Not opened or modified.'), indent=2))
+            if not ok:
+                raise SystemExit(1)
+            return
+        if args.ollama_url:
+            raise ValueError('--ollama-url requires --ollama.')
         if args.apparmor_profile:
             if sys.platform != 'linux':
                 raise ValueError('AppArmor profiles apply to Linux only.')
