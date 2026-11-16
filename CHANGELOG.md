@@ -4,6 +4,10 @@ Changes under **Unreleased** have not been included in a tagged release. Verific
 
 ## Unreleased
 
+### Fixed
+
+- Topic-map selections open the matching theme panel after the finer-subtopic panel-identity change. Expanders now track their open state, and actual map events update that state without reopening manually closed panels during source/window browsing. The original live topic acceptance assertion is retained, with regression coverage for map changes and manual state preservation.
+
 ### Added
 
 - Finer topic discovery inside each parent theme: one bounded leaf-density refit reuses the original article vectors, retains parent membership and explicitly lists members without a subtopic. Source browsing filters by subtopic or remaining members without new inference; unassigned sources now open in the reader. Generic reporting words are excluded from keyword labels. Version-2 exports retain the version-1 embedding cache identity and older results remain readable. Candidate subtopics still require human usefulness review.

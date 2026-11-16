@@ -118,3 +118,29 @@ def test_previous_v1_result_remains_readable_without_subtopic_fields(dashboard, 
         app = open_topics(dashboard)
         app.button(key='FormSubmitter:topic_discovery_form-Discover topics').click().run()
         assert not app.exception and app.download_button(key='topic_export')
+
+
+def test_map_events_open_matching_theme_and_preserve_manual_state_on_other_reruns(dashboard, client):
+    with patch('app.topic_discovery.observe_models', side_effect=lambda *args: inventory()):
+        result = run(articles(), client)
+    first, second = result['topics'][:2]
+    first_key, second_key = ('topic_expand_' + topic['id'] for topic in (first, second))
+    with patch('app.topic_discovery_view.discover_topics', return_value=result) as discover, \
+            patch('app.topic_discovery_view.st.plotly_chart', return_value={'selection': {'points': []}}) as chart:
+        app = open_topics(dashboard)
+        app.button(key='FormSubmitter:topic_discovery_form-Discover topics').click().run()
+        assert not app.exception and not app.session_state[first_key] and not app.session_state[second_key]
+        for topic, opened, closed in ((first, first_key, second_key), (second, second_key, first_key)):
+            chart.return_value = {'selection': {'points': [{'customdata': [topic['article_ids'][0]]}]}}
+            # Plotly events invoke this callback before Streamlit rerenders.
+            callback = chart.call_args.kwargs['on_select']
+            with patch('app.topic_discovery_view.st.session_state', app.session_state):
+                callback()
+            app.run()
+            assert not app.exception and app.session_state[opened] and not app.session_state[closed]
+            app.selectbox(key='topic_window').set_value(7).run()
+            assert app.session_state[opened]
+            app.session_state[opened] = False  # User closes the tracked expander.
+            app.run()
+            assert not app.exception and not app.session_state[opened]
+        discover.assert_called_once()

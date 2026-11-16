@@ -44,6 +44,10 @@ def _show_sources(ids, by_id, result):
                 st.warning('This source was removed from the library. Its original metadata remains in this result.')
 
 
+def _map_selection_changed():
+    st.session_state['topic_map_selection_changed'] = True
+
+
 def _show_result(saved, revision, scope):
     result = saved['result']
     if saved['revision'] != revision or saved['scope'] != scope:
@@ -72,9 +76,11 @@ def _show_result(saved, revision, scope):
                         custom_data=['article_id'], labels={'theme': 'Theme', 'x': 'Display axis 1', 'y': 'Display axis 2'})
     figure.update_traces(marker=dict(size=10, opacity=.85))
     figure.update_layout(height=390, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation='h'))
-    selected = st.plotly_chart(figure, width='stretch', key='topic_map', on_select='rerun', selection_mode='points')
+    selected = st.plotly_chart(figure, width='stretch', key='topic_map',
+                               on_select=_map_selection_changed, selection_mode='points')
     selected_ids = {point.get('customdata', [None])[0] for point in selected.get('selection', {}).get('points', [])
                     if isinstance(point.get('customdata'), (list, tuple)) and point['customdata']}
+    selection_changed = st.session_state.pop('topic_map_selection_changed', False)
     st.caption(f"Each point is a distinct body; exact copies share one point. This two-dimensional PCA view retains "
                f"{100 * result['projection']['explained_variance']:.1f}% of embedding variance. Clustering uses the full space. "
                'Select a point to expand its theme below.')
@@ -87,9 +93,13 @@ def _show_result(saved, revision, scope):
         st.info('No dense themes were found with these settings. Unassigned articles remain available below; try another collection or minimum group size.')
     for topic in result['topics']:
         label = labels[topic['id']]
+        expanded_key = 'topic_expand_' + topic['id']
+        # A stable expander key preserves browsing state. Map events update its
+        # tracked value explicitly; ordinary source/window reruns leave it alone.
+        if selection_changed or expanded_key not in st.session_state:
+            st.session_state[expanded_key] = bool(selected_ids.intersection(topic['article_ids']))
         with st.expander(literal_markdown(label) + f" · {topic['unique_articles']} distinct articles",
-                         key='topic_expand_' + topic['id'],
-                         expanded=bool(selected_ids.intersection(topic['article_ids']))):
+                         key=expanded_key, on_change='rerun'):
             st.text('Keywords: ' + ', '.join(topic['keywords']))
             trend = topic['trends'][str(window)]
             share = f"{100 * trend['share']:.1f}%" if trend['share'] is not None else 'unavailable'
