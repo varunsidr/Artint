@@ -1,8 +1,12 @@
+name: artint
+
 services:
   artint:
     build:
       context: .
       target: runtime
+      args:
+        INSTALL_TOPICS: ${ARTINT_TOPICS:-0}
     init: true
     restart: unless-stopped
     ports:

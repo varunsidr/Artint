@@ -13,7 +13,7 @@ from app.text_preview import plain_excerpt
 
 DB = Path(os.getenv('ARTICLE_LIBRARY_DB', str(Path(__file__).resolve().parents[1] / 'data' / 'articles.db')))
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SORTS = {
     'Newest saved': 'a.fetched_at DESC, a.id DESC',
     'Oldest saved': 'a.fetched_at ASC, a.id ASC',
@@ -89,6 +89,8 @@ def _migrate(con):
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
         if current_version < 6:
             _create_personal_schema(con)
+        if current_version < 7:
+            _create_research_schema(con)
         con.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         con.commit()
     except Exception:
@@ -160,6 +162,31 @@ def _create_personal_schema(con):
         for operation in ('INSERT', 'UPDATE', 'DELETE'):
             con.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_revision_{operation.lower()} AFTER {operation} ON {table}
                 BEGIN UPDATE library_state SET revision=revision+1 WHERE id=1; END''')
+
+
+def _create_research_schema(con):
+    con.execute('''CREATE TABLE IF NOT EXISTS research_state(
+        id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL)''')
+    con.execute('INSERT OR IGNORE INTO research_state VALUES(1,1)')
+    con.execute('''CREATE TABLE IF NOT EXISTS research_sessions(
+        id TEXT PRIMARY KEY,snapshot_hash TEXT NOT NULL UNIQUE,question TEXT NOT NULL,
+        created_at TEXT NOT NULL,result_json TEXT NOT NULL)''')
+    con.execute('CREATE INDEX IF NOT EXISTS research_sessions_saved_idx ON research_sessions(created_at DESC,id)')
+    con.execute('''CREATE TABLE IF NOT EXISTS research_session_sources(
+        session_id TEXT NOT NULL,source_id TEXT NOT NULL,article_id TEXT NOT NULL,
+        PRIMARY KEY(session_id,source_id),
+        FOREIGN KEY(session_id) REFERENCES research_sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(article_id) REFERENCES articles(id) ON DELETE CASCADE)''')
+    con.execute('CREATE INDEX IF NOT EXISTS research_session_article_idx ON research_session_sources(article_id)')
+    # Purge the complete saved answer before deleting any source it retains.
+    con.execute('''CREATE TRIGGER IF NOT EXISTS research_purge_source BEFORE DELETE ON articles BEGIN
+        DELETE FROM research_sessions WHERE id IN (
+            SELECT session_id FROM research_session_sources WHERE article_id=old.id); END''')
+    for table in ('research_sessions', 'research_session_sources'):
+        for operation in ('INSERT', 'UPDATE', 'DELETE'):
+            con.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_revision_{operation.lower()}
+                AFTER {operation} ON {table} BEGIN
+                UPDATE research_state SET revision=revision+1 WHERE id=1; END''')
 
 
 def create_collection(collection_id, title, query):

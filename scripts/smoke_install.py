@@ -17,7 +17,8 @@ def digest(path):
 
 
 def prepare():
-    from app import library_actions, reports, storage
+    from app import library_actions, reports, research_sessions, storage
+    from app.intelligence import article_passages
     from scripts.seed_demo import QUOTE, demo_articles
 
     marker = storage.DB.parent / '.artint-install-smoke.json'
@@ -30,13 +31,22 @@ def prepare():
     storage.upsert(article)
     library_actions.save_organization(article['id'], note='Synthetic installation note.', tags=['Install check'], collection_ids=[])
     library_actions.add_highlight(article['id'], QUOTE, note='Synthetic highlight.')
+    evidence = next(passage for passage in article_passages(article) if QUOTE in passage['text'])
+    snapshot = dict(question='What evidence-handling principle does this fictional demo state?',
+        model='Hand-authored installation fixture / no model run', supported=True,
+        claims=[dict(text=QUOTE, sources=[evidence['id']])], passages=[evidence],
+        source_scope=dict(selected_article_ids=[article['id']], searched_article_ids=[article['id']],
+                          source_fingerprints={article['id']:storage.article_fingerprint(article)}))
+    research_id = research_sessions.save_result(snapshot)
     record = dict(id=article['id'], pdf_sha256=digest(article['pdf_path']), text_sha256=hashlib.sha256(article['text'].encode()).hexdigest())
+    record.update(research_session_id=research_id,
+                  research_sha256=hashlib.sha256(research_sessions.validate_result(snapshot).encode()).hexdigest())
     marker.write_text(json.dumps(record), encoding='utf-8')
     return verify()
 
 
 def verify():
-    from app import library_actions, storage
+    from app import library_actions, research_sessions, storage
 
     record = json.loads((storage.DB.parent / '.artint-install-smoke.json').read_text(encoding='utf-8'))
     article = storage.get_article(record['id'])
@@ -47,11 +57,15 @@ def verify():
     state = library_actions.annotation_state(article['id'])
     if state['note'] != 'Synthetic installation note.' or len(state['highlights']) != 1:
         raise RuntimeError('Annotation persistence failed.')
-    return dict(articles=1, search=True, annotations=True, pdf_sha256=record['pdf_sha256'])
+    research = research_sessions.load_session(record['research_session_id'])
+    if not research or hashlib.sha256(research_sessions.validate_result(research['result']).encode()).hexdigest() != record['research_sha256']:
+        raise RuntimeError('Saved research persistence failed.')
+    return dict(articles=1, search=True, annotations=True, pdf_sha256=record['pdf_sha256'],
+                research_session_id=record['research_session_id'], research_sha256=record['research_sha256'])
 
 
 def offline_smoke():
-    from app import exports, library_actions, library_backup, reports, storage
+    from app import exports, library_actions, library_backup, reports, research_sessions, storage
 
     original_db, original_pdfs = storage.DB, reports.PDF_DIR
     try:
@@ -72,9 +86,12 @@ def offline_smoke():
                 raise RuntimeError('Portable restore changed the reading PDF.')
             if library_actions.annotation_state(copy['id'])['note'] != 'Synthetic installation note.':
                 raise RuntimeError('Portable restore changed notes.')
+            restored_research = research_sessions.load_session(result['research_session_id'])
+            if not restored_research or hashlib.sha256(research_sessions.validate_result(restored_research['result']).encode()).hexdigest() != result['research_sha256']:
+                raise RuntimeError('Portable restore changed saved research.')
             if library_backup.restore_backup(blob)['articles'] != 0:
                 raise RuntimeError('Repeated restore duplicated the article.')
-            return dict(result, metadata_export=True, backup_restore=True, restore_hardlinks=True, isolated=True)
+            return dict(result, metadata_export=True, backup_restore=True, saved_research_restore=True, restore_hardlinks=True, isolated=True)
     finally:
         storage.DB, reports.PDF_DIR = original_db, original_pdfs
 

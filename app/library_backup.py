@@ -14,10 +14,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app import reports, storage
+from app import research_sessions
 from app.library_actions import FILE_LOCK, clean_tags, managed_pdf_path, portable_id, require_idle_imports, stamp, text_hash
 
 FORMAT = 'article-intelligence-library'
-VERSION = 1
+VERSION = 2
 MAX_ARCHIVE = 250 * 1024 * 1024
 MAX_METADATA = 128 * 1024 * 1024
 MAX_EXPANDED = 512 * 1024 * 1024
@@ -33,7 +34,10 @@ TABLES = {
     'article_highlights': (('id', 'article_id', 'text_hash', 'start_offset', 'end_offset', 'quote', 'note', 'created_at'), 200_000),
     'article_insights': (('article_id', 'model', 'content_hash', 'version', 'insight_json'), 100_000),
     'embeddings': (('model', 'text_hash', 'vector_json'), 200_000),
+    'research_sessions': (research_sessions.FIELDS, research_sessions.MAX_SESSIONS),
+    'research_session_sources': (('session_id', 'source_id', 'article_id'), 100_000),
 }
+SESSION_TABLES = {'research_sessions', 'research_session_sources'}
 
 
 def _hash(data):
@@ -104,13 +108,17 @@ def _valid_analysis(value):
 
 
 def _validate(data):
-    if not isinstance(data, dict) or data.get('format') != FORMAT or type(data.get('version')) is not int or data['version'] != VERSION:
-        raise ValueError('Choose an Article Intelligence version-1 library backup.')
+    if not isinstance(data, dict) or data.get('format') != FORMAT or type(data.get('version')) is not int or data['version'] not in (1, VERSION):
+        raise ValueError('Choose an Article Intelligence version-1 or version-2 library backup.')
     if type(data.get('schema_version')) is not int or data['schema_version'] > storage.SCHEMA_VERSION:
         raise ValueError('This backup requires a newer application version.')
     records = data.get('tables')
-    if not isinstance(records, dict) or set(records) != set(TABLES):
+    expected_tables = set(TABLES) - SESSION_TABLES if data['version'] == 1 else set(TABLES)
+    if not isinstance(records, dict) or set(records) != expected_tables:
         raise ValueError('Backup is missing a required library section.')
+    if data['version'] == 1:
+        data = dict(data, version=VERSION, tables=dict(records, research_sessions=[], research_session_sources=[]))
+        records = data['tables']
     for table, (fields, maximum) in TABLES.items():
         rows = records[table]
         if not isinstance(rows, list) or len(rows) > maximum or any(not isinstance(row, dict) or set(row) != set(fields) for row in rows):
@@ -222,6 +230,25 @@ def _validate(data):
         if key in seen['embeddings']:
             raise ValueError('Backup contains duplicate vectors.')
         seen['embeddings'].add(key)
+    session_results, session_hashes = {}, set()
+    for row in records['research_sessions']:
+        result, _ = research_sessions.validate_record(row)
+        if row['id'] in session_results or row['snapshot_hash'] in session_hashes:
+            raise ValueError('Backup contains duplicate saved research.')
+        session_results[row['id']] = result
+        session_hashes.add(row['snapshot_hash'])
+    links = {ident: {} for ident in session_results}
+    for row in records['research_session_sources']:
+        ident, source, article_id = row['session_id'], row['source_id'], row['article_id']
+        _ident(ident); _ident(source); _ident(article_id)
+        if ident not in links or article_id not in articles or source in links[ident]:
+            raise ValueError('Backup contains missing or duplicate research source links.')
+        links[ident][source] = article_id
+    for ident, result in session_results.items():
+        if set(links[ident]) != research_sessions.source_ids(result):
+            raise ValueError('Backup research source links do not match its saved evidence.')
+    if sum(len(row['result_json'].encode('utf-8')) for row in records['research_sessions']) > research_sessions.MAX_TOTAL_BYTES:
+        raise ValueError('Backup exceeds the saved-research byte limit.')
     pdfs = data.get('pdfs')
     if not isinstance(pdfs, list) or len(pdfs) > len(articles):
         raise ValueError('Backup contains an invalid PDF manifest.')
@@ -283,7 +310,8 @@ def create_backup():
                     raise ValueError('Backup exceeds the 250 MB download limit.')
     if output.tell() > MAX_ARCHIVE:
         raise ValueError('Backup exceeds the 250 MB download limit.')
-    return output.getvalue(), dict(articles=len(data['tables']['articles']), pdfs=len(data['pdfs']), missing_pdfs=len(data['missing_pdfs']))
+    return output.getvalue(), dict(articles=len(data['tables']['articles']), pdfs=len(data['pdfs']),
+        missing_pdfs=len(data['missing_pdfs']), research_sessions=len(data['tables']['research_sessions']))
 
 
 def inspect_backup(blob):
@@ -350,7 +378,7 @@ def restore_preview(data):
         mapping, new, compatible, changed, current = _merge_plan(con, data)
     return dict(articles=len(mapping), new=len(new), existing=len(mapping)-len(new), changed_text=changed,
                 notes=len(data['tables']['article_notes']), highlights=len(data['tables']['article_highlights']),
-                pdfs=len(data['pdfs']))
+                pdfs=len(data['pdfs']), research_sessions=len(data['tables']['research_sessions']))
 
 
 def restore_backup(blob):
@@ -358,7 +386,8 @@ def restore_backup(blob):
     root = reports.PDF_DIR.resolve()
     root.mkdir(parents=True, exist_ok=True)
     staged, created = [], []
-    result = dict(articles=0, notes=0, highlights=0, tags=0, pdfs=0, collections=0, changed_text_skipped=0, annotation_limit_skips=0)
+    result = dict(articles=0, notes=0, highlights=0, tags=0, pdfs=0, collections=0, research_sessions=0,
+                  changed_text_skipped=0, annotation_limit_skips=0)
     try:
         with FILE_LOCK, zipfile.ZipFile(io.BytesIO(blob)) as archive, storage.connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -446,6 +475,12 @@ def restore_backup(blob):
                         result[key] += cursor.rowcount
             for row in data['tables']['embeddings']:
                 con.execute('INSERT OR IGNORE INTO embeddings VALUES(?,?,?)', (row['model'], row['text_hash'], row['vector_json']))
+            session_links = {row['id']: {} for row in data['tables']['research_sessions']}
+            for row in data['tables']['research_session_sources']:
+                session_links[row['session_id']][row['source_id']] = mapping[row['article_id']]
+            for row in data['tables']['research_sessions']:
+                _, inserted = research_sessions.insert_record(con, row, session_links[row['id']])
+                result['research_sessions'] += int(inserted)
     except Exception:
         for path in created:
             path.unlink(missing_ok=True)

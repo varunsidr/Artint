@@ -11,6 +11,7 @@ htmlcov/
 # Private libraries, publisher content, generated reports, PDFs and backups
 /data/
 /output/
+/docs/artint-review-progress*.json
 *.db
 *.db-*
 *.sqlite

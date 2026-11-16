@@ -1,12 +1,14 @@
 # Local installation and recovery
 
-Updated: 2026-10-31. Run commands from the repository folder containing `app/` and `requirements.txt`. Artint is a single-user local application. Ollama is optional; new AI generation requires Ollama 0.40.11 or newer for checked non-truncating context controls. Do not expose the unauthenticated app to other machines.
+Updated: 2026-11-05. Run commands from the repository folder containing `app/` and `requirements.txt`. Artint is a single-user local application. Ollama is optional; new AI generation requires Ollama 0.40.11 or newer for checked non-truncating context controls. Do not expose the unauthenticated app to other machines.
 
 See [validation](validation.md) for the environments actually checked, including one native Windows RTX 5050 configuration. Native macOS, ARM64 and container GPU configurations are not validated. Docker validation does not establish native support on its host OS.
 
 ## Windows / PowerShell
 
-Install Python 3.13, then:
+Install Python 3.13. For a new checkout, prefer a short folder such as `C:\src\Artint`. A deeply nested validation checkout exceeded Windows' path limit while installing an `lxml` resource; the same dependencies installed successfully in a shorter path. This does not require changing machine-wide settings.
+
+Then:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -16,6 +18,8 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe scripts/smoke_install.py
 .\.venv\Scripts\python.exe -m streamlit run app/dashboard.py
 ```
+
+If `py` is not recognized, run `python --version`. If it reports Python 3.13, replace the first command with `python -m venv .venv`; keep using the explicit virtual-environment executable afterward. This path was checked with Microsoft Store CPython 3.13.14.
 
 Open http://127.0.0.1:8501. No activation or PowerShell execution-policy change is needed. Auto capture also supports installed Chrome/Edge. The smoke check creates and removes its own synthetic library; it does not open your configured library.
 
@@ -91,7 +95,7 @@ If the host cannot provide the required sandbox, use HTML-only capture or a supp
 
 ## Docker Compose
 
-Install/start Docker Engine or Docker Desktop with Linux containers and Compose. From the repository:
+Install/start Docker Engine or Docker Desktop with Linux containers and Compose. `compose.yaml` defines a separate project named **artint** with its own network and `artint_library`/`artint_pdfs` volumes. The app uses SQLite and has no Supabase service dependency. Other projects can run on the same engine. From the repository:
 
 ```sh
 docker compose up --build -d --wait
@@ -118,9 +122,44 @@ Then open http://127.0.0.1:8503. Keep the same setting when recreating the servi
 | SQLite library and migration backups | `/var/lib/artint/data/articles.db` and its directory | `library` |
 | Individual reading PDFs | `/var/lib/artint/pdfs` | `pdfs` |
 
-Volume names include the Compose project prefix. Use the same project/directory name to reopen the same library. Native `data/` and `output/` are not mounted or migrated automatically. Initial named volumes inherit the image's directory ownership; imported/bind-mounted folders must support the runtime UID, SQLite locking, atomic file operations and hard links. No automatic recursive permission changes are performed.
+Volume names include the Compose project prefix, which defaults to `artint`. Use the same project name to reopen the same library; an explicit `-p` overrides the default. Older installations that used a folder-derived project name can keep using `docker compose -p PREVIOUS_PROJECT ...` to reach their existing volumes, or explicitly migrate with portable backup/restore. A different project name selects different volumes. Native `data/` and `output/` are not mounted or migrated automatically. Initial named volumes inherit the image's directory ownership; imported/bind-mounted folders must support the runtime UID, SQLite locking, atomic file operations and hard links. No automatic recursive permission changes are performed.
 
 The image uses a digest-pinned Python 3.13 base, a complete recorded Linux runtime dependency set, and Chromium assets copied from the matching digest-pinned official Playwright image. Only Chromium/FFmpeg assets enter the runtime. The upstream browser image can make the first build download large layers. Version pins do not imply byte-identical builds: system package repositories can change. See [sandbox details and upstream license](../docker/README.md).
+
+### Separate Artint stack and local settings
+
+For a persistent local stack on port 8502, copy the example once if you do not already have `.env`:
+
+```powershell
+Copy-Item .env.example .env
+docker compose --env-file .env -p artint -f compose.yaml up --build -d --wait
+```
+
+Open **http://127.0.0.1:8502**. Docker Desktop groups it as **artint**, with the service container `artint-artint-1`. The example sets `ARTINT_PORT=8502`; local `.env` is ignored by Git and not included in the image. Existing local settings should be edited rather than replaced.
+
+Manage only this stack from the repository directory:
+
+```powershell
+docker compose -p artint -f compose.yaml ps
+docker compose -p artint -f compose.yaml logs --tail 50
+docker compose -p artint -f compose.yaml stop
+docker compose -p artint -f compose.yaml up -d --wait
+```
+
+The separate stack starts with its own empty library. To bring in a native library, use its **Backup & restore** download and restore it in this container's UI; existing native files are not mounted or copied automatically. Stopping the stack preserves its named volumes and does not stop unrelated Compose projects. Tests keep using a unique explicit project name, so their cleanup does not target the persistent `artint` stack.
+
+### Optional topic-discovery backend
+
+The default image retains the lightweight coverage/library workflow. To include the experimental topic backend when intentionally updating your existing Artint stack:
+
+```powershell
+$env:ARTINT_TOPICS = '1'
+docker compose -p artint -f compose.yaml up --build -d --wait
+```
+
+Use the same project name and existing `.env` settings to keep reaching the same library/PDF volumes. Alternatively, set `ARTINT_TOPICS=1` in your existing local `.env`; do not replace it with the example if it already contains settings. This passes `INSTALL_TOPICS=1` to the runtime build. The feature is under **Analytics → Topic discovery (experimental)** and still requires an explicitly reachable installed embedding model. No model weights are installed with the backend.
+
+The topic-enabled runtime, live discovery UI and persisted-vector reuse after container recreation passed the [local Docker checkpoint](validation.md#topic-enabled-docker-checkpoint--2026-11-12). The image also reached the existing host Ollama service for one original synthetic live-model smoke on the checked Windows Docker Desktop setup. This does not establish container GPU passthrough, networking on every host or real-world topic quality. The validation project is separate from the ordinary user stack; run `python scripts/validate_container.py --topics --report output/my-container-topics/report.json` for its reproducible scripted checks.
 
 ### Optional Ollama
 
@@ -163,6 +202,14 @@ docker compose run --rm --no-deps -p 127.0.0.1:8503:8501 \
 
 Only the `/tmp/demo` database is used; it disappears with that container. The example is Bash syntax. The synthetic articles and hand-authored analysis fixtures are not evidence of model quality.
 
+## Saved research and schema upgrades
+
+Current code uses schema 7. The first connection to an older library makes the existing consistent SQLite backup under its database directory's `backups/` folder, then migrates in one transaction. Schema 7 adds saved research, source links and their independent revision counter; it preserves existing source, annotation and cache records. Older code rejects a schema-7 database. Keep the pre-upgrade backup if you need an intentional rollback.
+
+Full library backups now use version 2 and include original saved answers/passages. Version-1 ZIPs can still be restored. Session evidence stays unchanged across compatible restores and article-ID mapping; deleting a source purges its linked saved results. Earlier exported backups/downloads remain independent copies.
+
+The installation/Compose validators now use one original hand-authored research fixture to verify saved results across restart, container recreation and portable restore, without model inference. This tests persistence rather than answer quality.
+
 ## Backups, migration and removal
 
 Use **Library -> Export library -> Backup & restore -> Prepare full backup** for a portable ZIP including saved text, notes, highlights, analyses and managed PDFs. Save the download outside a Docker build context. To migrate a native library, explicitly download that backup, open the container's UI, inspect it in Restore backup and approve the merge. PDF paths are rebased by the existing restore service; copying a Windows SQLite file alone leaves Windows PDF paths unresolved.
@@ -195,6 +242,7 @@ The CLI returns nonzero if the service/inventory is unavailable, selected models
 
 The same snapshot is available through **Research → Research settings → Check model status**, with a readable timestamp and theme-aware table. Refresh explicitly after loading/unloading models; switching the endpoint/selected models or refreshing model inventory clears the old snapshot. Mixed residency near 100% is displayed as `>99.9%`, and near zero as `<0.1%`, so rounding cannot imply a fully GPU/CPU placement. Memory residency is not GPU activity, speed, device identity or proof of cache precision. For a remote endpoint the report describes that server's metadata, not the client's RTX GPU. The API does not expose KV-cache precision; use actual runner logs for that check.
 
+- **Dependency install reports a missing `lxml` resource or a long-path hint:** use a new checkout with a shorter path and create its virtual environment there. Preserve an existing library through the documented portable backup/restore workflow; changing folders does not automatically rebase saved PDF paths.
 - **Missing `.venv` executable:** run from the folder containing `app/`; create the virtual environment for that operating system first.
 - **Docker API unavailable:** start Docker Desktop/the daemon and select Linux containers.
 - **Port already allocated:** use another `ARTINT_PORT`; leave a running native library untouched.

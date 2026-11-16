@@ -36,6 +36,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-topics.txt
             requirements-linux-lock.txt
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
@@ -79,7 +80,11 @@ jobs:
         run: python scripts/validate_native.py
 
   container:
-    name: Docker / Linux
+    name: Docker / Linux / ${{ matrix.mode }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [base, topics]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -87,4 +92,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Build and validate disposable containers
-        run: python3 scripts/validate_container.py --report output/container-validation.json
+        run: python3 scripts/validate_container.py ${{ matrix.mode == 'topics' && '--topics' || '' }} --report output/container-validation.json

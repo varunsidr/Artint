@@ -11,6 +11,7 @@ from scripts.research_eval.contracts import (
     load_corpus, read_json, validate_corpus, write_json,
 )
 from scripts.research_eval.development import prepare_gold_review
+from scripts.research_eval.simple_review import PAGE as SIMPLE_PAGE
 
 
 SUGGESTIONS_SCHEMA = obj(dict(
@@ -66,13 +67,23 @@ def prepare_batch_review(corpus_path, suggestions_path, output):
     write_json(output / 'suggestions.json', suggestions)
     payload = json.dumps(dict(corpus=corpus, review=review, suggestions=suggestions), ensure_ascii=False).replace('<', '\\u003c')
     (output / 'batch-review.html').write_text(PAGE.replace('PAYLOAD_JSON', payload), encoding='utf-8')
+    (output / 'start-review.html').write_text(SIMPLE_PAGE.replace('PAYLOAD_JSON', payload), encoding='utf-8')
     counts = dict(Counter(r['suggested_action'] for r in rows))
     result = dict(cases=len(rows), source_families=len({c['story_group'] for c in corpus['cases']}),
         suggested_actions=counts, high_priority=sum(r['priority'] == 'high' for r in rows),
         human_labels_created=0, quality_gate='not_established', output=str(output))
     write_json(output / 'batch-summary.json', result)
     (output / 'START_HERE.md').write_text(
-        '# Batch review\n\nOpen `batch-review.html` in a browser. All cases start pending. '
+        '# Quick review\n\nOpen `start-review.html` in a browser. Enter your name. '
+        'Read each question, expected answer and saved article, then choose Looks correct, Needs changes or Not sure. '
+        'Five questions appear at a time. Needs changes and Not sure stay pending; only your explicit confirmation approves a case. '
+        'Flagged and missing-answer questions require reading every selected saved article before confirming. '
+        'Progress is saved in browser storage when available. Use Save progress to download a backup and Resume from file to reload it. '
+        'No model or server is used. Related-article grouping remains a separate unfinished check.\n\n'
+        'Some cases deliberately include unrelated stories as distractors to test retrieval. '
+        'The quick screen groups them under Other stories in this test; their inclusion does not imply a connection. '
+        'Read those copies too before confirming that an answer is absent.\n\n'
+        'The detailed `batch-review.html` remains available for editing, grouping and bulk review. All cases start pending. '
         'Read the original/proposed comparisons and linked full saved copies, then select the cases you have checked. '
         'Record selected suggestions together, or exclude them with a reason. Flagged cases need an explicit full-scope confirmation. '
         'Enter your own reviewer name; download review JSON to save progress and load it here to resume. '
@@ -99,6 +110,7 @@ table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:le
 </style></head><body>
 <header><div class="meta">ARTINT · DEVELOPMENT EVIDENCE</div><h1>Review the batch</h1>
 <p>Compare all proposed cases together. AI suggestions remain separate from your decisions. Nothing is sent to a server; download JSON to save progress.</p>
+<p>Some test cases deliberately include unrelated stories to check whether retrieval ignores them. Inclusion in a test is not evidence that stories are connected; inspect all selected copies before confirming an answer is absent.</p>
 <div class="summary"><div><strong id="total"></strong><span>proposed cases</span></div><div><strong id="suggested"></strong><span>suggested revisions</span></div><div><strong id="flagged"></strong><span>need source checks</span></div><div><strong id="progress" aria-live="polite"></strong><span>human decisions recorded</span></div></div>
 <div class="toolbar"><label>Reviewer <input id="reviewer" maxlength="100" autocomplete="off" placeholder="Your name"></label><button id="export" class="primary">Download review JSON</button><button id="import">Load saved review</button><input id="import-file" type="file" accept="application/json" hidden></div>
 <p id="message" role="status" aria-live="polite"></p></header>

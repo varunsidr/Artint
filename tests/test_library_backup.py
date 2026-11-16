@@ -56,7 +56,7 @@ def test_portable_round_trip_preserves_text_notes_highlights_collections_analysi
     state = actions.annotation_state(original['id'])
     original_pdf = Path(original['pdf_path']).read_bytes()
     blob, stats = backups.create_backup()
-    assert stats == {'articles':1,'pdfs':1,'missing_pdfs':0}
+    assert stats == {'articles':1,'pdfs':1,'missing_pdfs':0,'research_sessions':0}
     data = backups.inspect_backup(blob)
     assert str(reports.PDF_DIR) not in json.dumps(data)
     destination(tmp_path, monkeypatch)

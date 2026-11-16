@@ -18,8 +18,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
 WORKDIR /app
-COPY requirements.txt requirements-linux-lock.txt ./
+ARG INSTALL_TOPICS=0
+COPY requirements.txt requirements-linux-lock.txt requirements-topics.txt ./
 RUN python -m pip install --no-cache-dir -r requirements-linux-lock.txt \
+    && if [ "$INSTALL_TOPICS" = "1" ]; then python -m pip install --no-cache-dir -r requirements-topics.txt -c requirements-linux-lock.txt; fi \
     && python -m pip check \
     && python -m playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/* \
@@ -33,7 +35,7 @@ COPY --from=browser-assets /ms-playwright/chromium_headless_shell-1248/ /opt/pla
 COPY --from=browser-assets /ms-playwright/ffmpeg-1013/ /opt/playwright/ffmpeg-1013/
 
 COPY app/ ./app/
-COPY scripts/seed_demo.py scripts/check_install.py scripts/smoke_install.py ./scripts/
+COPY scripts/seed_demo.py scripts/check_install.py scripts/smoke_install.py scripts/topic_validation.py ./scripts/
 COPY .streamlit/config.toml ./.streamlit/config.toml
 COPY cli.py LICENSE ./
 

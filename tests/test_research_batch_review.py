@@ -53,6 +53,11 @@ def test_prepare_batch_keeps_originals_and_all_decisions_pending(packet, tmp_pat
     page = (out / 'batch-review.html').read_text(encoding='utf-8')
     assert r'\u003c/script>' in page and 'Literal </script><img' not in page
     assert (out / 'review.html').exists()  # Existing detailed workflow remains available.
+    simple = (out / 'start-review.html').read_text(encoding='utf-8')
+    assert r'\u003c/script>' in simple and 'Literal </script><img' not in simple
+    assert 'Other stories in this test' in simple
+    assert 'Their inclusion does not mean the stories are connected.' in simple
+    assert 'start-review.html' in (out / 'START_HERE.md').read_text(encoding='utf-8')
 
 
 @pytest.mark.parametrize('change', ['corpus_hash', 'case_hash', 'duplicate', 'scope', 'label', 'bad_span', 'hidden_exclusion', 'unchanged_revise', 'changed_keep', 'unflagged_absence', 'human_suggestions'])
@@ -173,6 +178,111 @@ def test_batch_browser_preserves_pending_edits_and_exports_compatible_decisions(
                 assert accepted['cases'][1]['question'] == edited['question']
                 assert all(c['label']['kind'] == 'human' for c in accepted['cases'])
                 # This is declared fictional test data, never a real human review.
+                assert errors == [] and remote == []
+            finally:
+                await browser.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS') != '1', reason='Opt-in actual browser workflow')
+@pytest.mark.parametrize('browser_storage', [True, False])
+def test_quick_review_pending_autosave_paging_and_compatible_export(packet, tmp_path, browser_storage):
+    """Exercise fictional decisions only; never label the real development corpus."""
+    import asyncio
+    from playwright.async_api import async_playwright
+    from app.browser_render import _launch
+
+    corpus, suggestions, cpath, spath = packet
+    # Six cases exercise the five-at-a-time boundary without dropping any cases.
+    for case, proposal in zip(copy.deepcopy(corpus['cases']), copy.deepcopy(suggestions['judgments'])):
+        case['id'] += '-extra'
+        proposal['case_id'] = case['id']
+        proposal['case']['id'] = case['id']
+        proposal['case_sha256'] = digest(encoded(case))
+        corpus['cases'].append(case)
+        suggestions['judgments'].append(proposal)
+    suggestions['proposal_sha256'] = digest(encoded(corpus))
+    cpath, spath = tmp_path / 'six-cases.json', tmp_path / 'six-suggestions.json'
+    write_json(cpath, corpus)
+    write_json(spath, suggestions)
+    out = tmp_path / 'quick'
+    prepare_batch_review(cpath, spath, out)
+
+    async def exercise():
+        errors, remote = [], []
+        async with async_playwright() as playwright:
+            browser = await _launch(playwright)
+            try:
+                page = await browser.new_page(accept_downloads=True)
+                if not browser_storage:
+                    await page.add_init_script("Object.defineProperty(window, 'localStorage', {get(){throw Error('Blocked storage')}})")
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('request', lambda request: remote.append(request.url) if request.url.startswith(('http:', 'https:')) else None)
+                await page.goto((out / 'start-review.html').as_uri())
+                assert await page.locator('.card').count() == 5
+                assert await page.locator('#progress').inner_text() == '0 of 6 confirmed'
+                assert await page.locator('img').count() == 0
+                cards = [page.locator(f'article[data-case-id="{c["id"]}"]') for c in corpus['cases']]
+                await cards[0].get_by_role('button', name='Looks correct', exact=True).click()
+                assert 'Enter your name' in await page.locator('#status').inner_text()
+                assert await page.locator('#progress').inner_text() == '0 of 6 confirmed'
+                await page.locator('#reviewer').fill('Automated fictional quick-review fixture')
+                await cards[0].get_by_role('button', name='Looks correct', exact=True).click()
+                await cards[1].locator('textarea').fill('Check the qualifier.')
+                await cards[1].get_by_role('button', name='Needs changes', exact=True).click()
+                await cards[2].get_by_role('button', name='Not sure', exact=True).click()
+                assert await page.locator('#progress').inner_text() == '1 of 6 confirmed · 2 left for follow-up'
+                await cards[2].get_by_role('button', name='Looks correct', exact=True).click()
+                assert 'tick the check' in await cards[2].locator('.state').inner_text()
+                assert await page.locator('#progress').inner_text() == '1 of 6 confirmed · 2 left for follow-up'
+                if not browser_storage:
+                    assert 'saving is unavailable' in await page.locator('#status').inner_text()
+                async with page.expect_download() as partial:
+                    await page.locator('#export').click()
+                saved = tmp_path / 'partial-quick-review.json'
+                await (await partial.value).save_as(saved)
+                value = read_json(saved)
+                _gold_review(corpus, value, require_complete=False)
+                assert [r['decision'] for r in value['judgments']] == ['accept'] + ['pending'] * 5
+                assert value['judgments'][1]['notes'] == '[Needs changes] Check the qualifier.'
+                assert not value['source_grouping_reviewed']
+                await page.locator('#next').click()
+                assert await page.locator('.card').count() == 1
+                assert await page.locator('#position').inner_text() == 'Questions 6–6 of 6'
+                await page.locator('#previous').click()
+                if browser_storage:
+                    await page.reload()
+                    assert 'restored' in await page.locator('#status').inner_text()
+                    assert await page.locator('#progress').inner_text() == '1 of 6 confirmed · 2 left for follow-up'
+                else:
+                    # A fresh context has neither transient decisions nor storage.
+                    await page.close()
+                    page = await browser.new_page(accept_downloads=True)
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.on('request', lambda request: remote.append(request.url) if request.url.startswith(('http:', 'https:')) else None)
+                    await page.add_init_script("Object.defineProperty(window, 'localStorage', {get(){throw Error('Blocked storage')}})")
+                    await page.goto((out / 'start-review.html').as_uri())
+                    await page.locator('#import-file').set_input_files(saved)
+                    await page.wait_for_function("document.getElementById('status').textContent.includes('progress is loaded')")
+                assert await page.locator('#reviewer').input_value() == value['reviewer']
+                await page.locator('.card').nth(1).get_by_role('button', name='Looks correct', exact=True).click()
+                flagged = page.locator('.card').nth(2)
+                await flagged.locator('input[type=checkbox]').check()
+                await flagged.get_by_role('button', name='Looks correct', exact=True).click()
+                async with page.expect_download() as completed:
+                    await page.locator('#export').click()
+                final = tmp_path / 'quick-reviewed.json'
+                await (await completed.value).save_as(final)
+                result = read_json(final)
+                checked = _gold_review(corpus, result, require_complete=False)
+                assert [r['decision'] for r in result['judgments']] == ['accept', 'revise', 'accept'] + ['pending'] * 3
+                assert checked['cases'][1]['question'] == suggestions['judgments'][1]['case']['question']
+                assert not result['source_grouping_reviewed']
+                with pytest.raises(EvaluationError, match='Review every case'):
+                    _gold_review(corpus, result, require_complete=True)
+                await page.locator('.card').first.get_by_role('button', name='Undo', exact=True).click()
+                assert '2 of 6 confirmed' in await page.locator('#progress').inner_text()
                 assert errors == [] and remote == []
             finally:
                 await browser.close()

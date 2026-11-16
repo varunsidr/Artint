@@ -1,4 +1,6 @@
 """Local article analysis and retrieval with Ollama; no Streamlit dependency."""
+from copy import deepcopy
+import hashlib
 import json
 import math
 import os
@@ -15,6 +17,7 @@ ANALYSIS_VERSION = '1'
 MAX_ANALYSIS_CHARS = 18000
 MAX_QUESTION_CHARS = 2000
 CONTEXT_POLICY_VERSION = 'adaptive-8k-16k-v1'
+REQUEST_IDENTITY_VERSION = 'ollama-chat-request-v1'
 CONTEXT_WINDOWS = (8192, 16384)
 OUTPUT_TOKENS = 1600
 CONTEXT_MARGIN = 512
@@ -43,6 +46,13 @@ class ContextWindowError(IntelligenceError):
     """The server rejected a request because its context window was exhausted."""
 
 
+def _request_fingerprint(value):
+    """SHA-256 of canonical JSON, independent of transport serialization details."""
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def context_budget(messages):
     """Estimate text tokens, including schema text; the server enforces actual fit.
 
@@ -63,6 +73,7 @@ class OllamaClient:
         self.timeout = timeout
         self.last_generation = {}
         self._context_controls_checked = False
+        self.runtime_version = None
 
     def _request(self, method, path, **kwargs):
         try:
@@ -110,6 +121,7 @@ class OllamaClient:
         if not match or tuple(map(int, match.groups())) < MIN_CONTEXT_RUNTIME:
             raise IntelligenceError('Automatic context selection requires Ollama 0.40.11 or newer '
                                     'for the checked non-truncating request controls. Update Ollama and retry.')
+        self.runtime_version = runtime
         self._context_controls_checked = True
 
     def generate(self, model, prompt, schema):
@@ -126,11 +138,20 @@ class OllamaClient:
         }
         budget = context_budget(body['messages'])
         attempts = []
-        self.last_generation = dict(budget, attempts=attempts)
+        self.last_generation = dict(budget, attempts=attempts, request_identity=dict(
+            version=REQUEST_IDENTITY_VERSION, provider='ollama', requested_model=model,
+            reported_model=None, runtime_version=self.runtime_version, model_digest=None,
+            messages_sha256=_request_fingerprint(body['messages']),
+            schema_sha256=_request_fingerprint(schema),
+            notice='Canonical JSON request fingerprints; model weights, server-side defaults and '
+                   'embedding-cache provenance are not verified. Matching fingerprints do not guarantee identical output.',
+        ))
         windows = CONTEXT_WINDOWS[CONTEXT_WINDOWS.index(budget['context_window']):]
         for window in windows:
             payload = dict(body, options=dict(temperature=0, num_ctx=window, num_predict=OUTPUT_TOKENS))
-            attempt = dict(context_window=window)
+            attempt = dict(context_window=window, status='requested',
+                           request_sha256=_request_fingerprint(payload),
+                           options=deepcopy(payload['options']))
             attempts.append(attempt)
             try:
                 data = self._request('POST', '/api/chat', json=payload)
@@ -140,6 +161,12 @@ class OllamaClient:
                     continue
                 raise IntelligenceError('This request exceeds the 16K context limit. Use a shorter article '
                                         'or narrower source selection. No shortened answer was saved.') from None
+            except IntelligenceError:
+                attempt['status'] = 'error'
+                raise
+            reported_model = data.get('model')
+            self.last_generation['request_identity']['reported_model'] = (
+                reported_model if isinstance(reported_model, str) and 0 < len(reported_model) <= 256 else None)
             prompt_tokens = data.get('prompt_eval_count')
             if type(prompt_tokens) is not int or prompt_tokens < 0:
                 prompt_tokens = None
@@ -254,7 +281,7 @@ def analyze_article(article, model, client=None, force=False):
     client = client or OllamaClient()
     result = client.generate(model, prompt, schema)
     if isinstance(getattr(client, 'last_generation', None), dict) and client.last_generation:
-        result['generation'] = dict(client.last_generation)
+        result['generation'] = deepcopy(client.last_generation)
     result.update(model=model, partial=len(passages) < len(all_passages),
                   passages_analyzed=len(passages), total_passages=len(all_passages))
     return save_insight(article, model, ANALYSIS_VERSION, result)
@@ -326,5 +353,5 @@ def answer_question(question, articles, model, embedding_model, client=None):
         raise IntelligenceError('The model returned an inconsistent answer. Please try again.')
     answer = dict(result, passages=passages, model=model, question=question, retrieval=stats)
     if isinstance(getattr(client, 'last_generation', None), dict) and client.last_generation:
-        answer['generation'] = dict(client.last_generation)
+        answer['generation'] = deepcopy(client.last_generation)
     return answer

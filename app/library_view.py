@@ -137,11 +137,20 @@ def reading_room(article, insight):
         for index, link in enumerate(references, 1):
             st.link_button(f'Source link {index}', link)
         with st.expander('Remove from library', icon=':material/delete:'):
+            from app import research_sessions
+            saved_count = research_sessions.article_session_count(article['id'])
             st.caption('Deletes this article, saved analysis, notes, tags, highlights, collection memberships and its managed PDF. Download a library backup first if you may need them later.')
+            if saved_count:
+                st.warning(f'{saved_count} saved research {"result uses" if saved_count == 1 else "results use"} this article. Deleting it removes that research and its quoted evidence.')
+                st.caption('Earlier downloaded exports/backups keep their copies.')
             confirmed = st.checkbox('Delete this article and its saved work', key='delete_confirm_' + article['id'])
             if st.button('Delete article', key='delete_article_' + article['id'], disabled=not confirmed):
                 try:
                     result = library_actions.delete_article(article['id'])
+                    active = st.session_state.get('ai_research')
+                    if active and article['id'] in research_sessions.source_ids(active['result']):
+                        st.session_state.pop('ai_research', None)
+                        st.session_state.pop('ai_research_error', None)
                     st.session_state['library_notice'] = 'Article and saved work deleted.' + (' PDF cleanup will retry when the file is available.' if result['cleanup_pending'] else '')
                     st.rerun()
                 except (ValueError, OSError, sqlite3.Error) as exc:

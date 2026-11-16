@@ -165,6 +165,6 @@ def test_v5_upgrade_preserves_source_records_and_adds_personal_tables():
         con.execute('PRAGMA user_version=5')
     assert storage.get_article(item['id'])['text'] == item['text']
     assert actions.annotation_state(item['id'])['note'] == ''
-    backup = next((storage.DB.parent/'backups').glob('*before-v6-*.db'))
+    backup = next((storage.DB.parent/'backups').glob(f'*before-v{storage.SCHEMA_VERSION}-*.db'))
     with closing(sqlite3.connect(backup)) as con:
         assert con.execute('PRAGMA user_version').fetchone()[0] == 5

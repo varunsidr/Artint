@@ -13,8 +13,9 @@ from app.intelligence import (
 from app.storage import article_fingerprint, get_article, library_filter_options, library_overview, library_page, load_articles, load_insight
 from app.library_filters import build_filters, LENGTHS, PERIODS
 from app.observatory_data import collections
-from app.model_health import inspect_ollama, memory_share_label
+from app.model_health import inspect_ollama, memory_share_label, observe_models, model_observation
 from app.research_export import research_exports
+from app.research_history_view import research_navigation, save_control
 from app.ui import display_date, empty_state, page_header, topic_chips, pagination, reset_page_if_changed, navigate, literal_markdown
 
 
@@ -90,7 +91,7 @@ def _focused_analysis(article_id, model, client, ready, force):
     if insight:
         render_saved_insight(article, insight, key_prefix='focused')
     elif not ready:
-        st.info('Connect your local model in Research settings above, then generate the analysis. No embedding model is needed for an article summary.')
+        st.info('Connect your local model in Research settings below, then generate the analysis. No embedding model is needed for an article summary.')
     else:
         st.write('Ready to generate a summary and cited takeaways using ' + model + '.')
     st.button('Return to Library', on_click=navigate, args=('Library',), icon=':material/book_2:')
@@ -159,9 +160,15 @@ def _compute_status(base_url, model, embedding_model):
                'KV-cache precision is not reported by this API.')
 
 
-def _research_answer(answer, reused=False):
+def _research_answer(answer, reused=False, key_prefix='research'):
     st.subheader('Research answer' if 'supported' in answer else 'Matching passages')
     st.text(answer['question'])
+    observation = answer.get('model_observation')
+    if isinstance(observation, dict) and observation.get('version') == 'ollama-model-observation-v1':
+        if observation.get('state') == 'changed':
+            st.warning('The installed model versions changed during this run. Inspect the evidence and generate a fresh result before comparing runs.')
+        elif observation.get('state') == 'unavailable':
+            st.caption('Model-version observations were incomplete for this result. Its saved evidence remains available.')
     source_scope = answer.get('source_scope')
     if isinstance(source_scope, dict):
         ids = source_scope.get('searched_article_ids')
@@ -186,7 +193,8 @@ def _research_answer(answer, reused=False):
     with st.expander('All retrieved passages', expanded='supported' not in answer):
         _show_evidence(passages, numbered=True)
     trace = answer.get('retrieval', {})
-    if trace:
+    if isinstance(trace, dict) and all(type(trace.get(key)) is int and trace[key] >= 0
+            for key in ('passages_searched', 'embeddings_reused', 'embeddings_created')):
         st.caption(f"{trace['passages_searched']:,} passages searched · {len(passages)} retrieved · "
                    f"{trace['embeddings_reused']:,} embeddings reused · {trace['embeddings_created']:,} created")
     _show_generation_context(answer)
@@ -198,10 +206,10 @@ def _research_answer(answer, reused=False):
         readable, complete = st.columns(2)
         with readable:
             st.download_button('Download research brief', brief, file_name='research-brief.md',
-                               mime='text/markdown', key='research_export_markdown', on_click='ignore', icon=':material/download:')
+                               mime='text/markdown', key=key_prefix + '_export_markdown', on_click='ignore', icon=':material/download:')
         with complete:
             st.download_button('Download full result', snapshot, file_name='research-result.json',
-                               mime='application/json', key='research_export_json', on_click='ignore', icon=':material/data_object:')
+                               mime='application/json', key=key_prefix + '_export_json', on_click='ignore', icon=':material/data_object:')
     except (ValueError, TypeError):
         st.warning('This result cannot be exported completely. Check its evidence or generate a fresh result.')
 
@@ -221,17 +229,23 @@ def _show_research_result(scope=None, reused=False):
     if research['scope'] != scope or (failed and failed['scope'] == scope):
         st.info('Showing your last completed result. Its original source and model selection may differ from the current controls; the saved passages below remain unchanged.')
     _research_answer(research['result'], reused)
+    save_control(research['result'])
     st.button('Clear research result', key='research_clear_result', on_click=_discard_research_result,
-              help='Clear this session result and its exports. Saved articles and analyses are kept.', icon=':material/close:')
+              help='Clear the current browser result and its exports. Saved research, articles and analyses are kept.', icon=':material/close:')
 
 
 def render_intelligence(overview):
-    page_header('Research', 'Research workspace', 'Choose your sources. Check the evidence behind every answer.')
+    page_header('Research', 'Research workspace', 'Summarize an article or ask a question about the sources you choose.')
+    if research_navigation():
+        return
     if not overview['total']:
         empty_state('Good questions start with good sources', 'Import a few articles to begin your research.')
         _show_research_result()
         return
 
+    # Reserve the task area first so model setup follows the user's workflow,
+    # while model choices are resolved before querying saved analyses.
+    workspace = st.container()
     client = OllamaClient()
     models, error = _model_status(client.base_url)
     chat_models = [name for name in models if 'embed' not in name.lower() and 'cloud' not in name.lower()]
@@ -268,17 +282,25 @@ def render_intelligence(overview):
             st.caption('Article passages are sent to the configured model endpoint: ' + client.base_url)
         _compute_status(client.base_url, model, embedding_model)
 
+    with workspace:
+        _render_research_workspace(overview, model, embedding_model, client,
+                                   not error and model in chat_models, error, force)
+
+
+def _render_research_workspace(overview, model, embedding_model, client, ready, error, force):
     if model != 'qwen3:8b':
         overview = library_overview(model, ANALYSIS_VERSION)
-    ready = not error and model in chat_models
     focus = st.session_state.get('research_focus_article')
     if focus:
         _focused_analysis(focus, model, client, ready, force)
         return
-    st.html('<div class="quiet-status">'
-            f'<span class="status-dot" style="background:var(--{"positive" if ready else "subtle"})"></span>'
-            f'{"Answer model available" if ready else "Model service unavailable" if error else "Choose an installed answer model"} &nbsp; / &nbsp; '
-            f'{overview["analyzed"]:,} current saved analyses in your library</div>')
+    st.write('**1. Find your articles → 2. Choose a task → 3. Check and save the result.**')
+    st.caption('Article summaries explain individual sources. Questions use only the articles you explicitly select. '
+               'Analytics shows collection counts and publication trends without running AI.')
+    if not ready:
+        st.info('Local AI is unavailable. You can still read saved summaries and saved research. '
+                'Open Research settings at the bottom to connect a model.')
+    st.subheader('1. Find your articles')
 
     collection_options = collections()
     collection_names = {row['id']: row['title'] for row in collection_options}
@@ -286,16 +308,16 @@ def render_intelligence(overview):
         st.session_state['research_collection'] = ''
     if st.session_state.get('research_publisher', 'All publishers') not in ['All publishers', *overview['publishers']]:
         st.session_state['research_publisher'] = 'All publishers'
-    with st.expander('General filters', expanded=True, icon=':material/tune:'):
-        collection, source = st.columns([2, 1])
-        with collection:
-            selected_collection = st.selectbox('Research collection', list(collection_names),
-                                               format_func=collection_names.get, key='research_collection', persist_state='session')
-        with source:
-            chosen_source = st.selectbox('Publisher', ['All publishers'] + overview['publishers'],
-                                        key='research_publisher', persist_state='session')
+    collection, search = st.columns([1, 2])
+    with collection:
+        selected_collection = st.selectbox('Research collection', list(collection_names),
+                                           format_func=collection_names.get, key='research_collection', persist_state='session')
+    with search:
         query = st.text_input('Find source articles', placeholder='Enter a topic or keyword, e.g. layoffs',
                               max_chars=256, key='research_search', icon=':material/search:', persist_state='session')
+    with st.expander('More source filters', icon=':material/tune:'):
+        chosen_source = st.selectbox('Publisher', ['All publishers'] + overview['publishers'],
+                                    key='research_publisher', persist_state='session')
         published, status, length = st.columns(3)
         with published:
             period = st.selectbox('Published', ['Any time', *PERIODS, 'Custom dates', 'Date unavailable'],
@@ -330,7 +352,7 @@ def render_intelligence(overview):
         key = 'research_' + name
         st.session_state[key] = [value for value in st.session_state.get(key, []) if value in options[name]]
     st.session_state['research_tags'] = st.session_state['research_tags'][:20]
-    with st.expander('Topic filters', expanded=True, icon=':material/filter_alt:'):
+    with st.expander('Topic filters', icon=':material/filter_alt:'):
         st.caption(f"Choices from all {options['total']:,} matching articles, including {options['analyzed']:,} with current saved analyses. They update when your search or general filters change.")
         if len(options['topics']) == 100 or len(options['tags']) == 100:
             st.caption('Up to 100 labels are shown, retaining valid selections. Narrow your search or collection to find less common labels.')
@@ -346,46 +368,65 @@ def render_intelligence(overview):
                                            key='research_tags', disabled=not options['tags'], persist_state='session',
                                            placeholder='Tags in matching articles')
         if not options['topics']:
-            st.caption('No saved analysis topics in this selection. You can still search these articles, use your tags, or analyze them in Saved insights to add labels.')
+            st.caption('No saved analysis topics in this selection. Search the article text, use your tags, or generate article summaries to add labels.')
     filters = dict(base, topics=topics, tags=selected_tags)
     reset_page_if_changed('research', filters)
     result = library_page(page=st.session_state['research_page'], page_size=25, **filters)
     items = result['items']
     pagination(result, 'research')
+    selection_scope = dict(filters, page=result['page'])
+    if st.session_state.get('research_selection_scope') != selection_scope:
+        st.session_state['research_selection_scope'] = selection_scope
+        st.session_state['research_selected_ids'] = []
+        st.session_state['research_all_matches'] = False
     if not items:
         empty_state('No matching sources', 'Try a different keyword, publisher, or topic.')
         _show_research_result()
         return
 
-    ask_tab, insights_tab = st.tabs(['Ask library', 'Saved insights'])
+    by_id = {article['id']: article for article in items}
+    if 'research_selected_ids' in st.session_state:
+        st.session_state['research_selected_ids'] = [value for value in st.session_state['research_selected_ids'] if value in by_id]
+    if result['total'] > 100:
+        st.session_state['research_all_matches'] = False
+    all_matches = st.checkbox('Include every match (up to 100 articles)',
+                               disabled=result['total'] > 100, key='research_all_matches',
+                               help='Explicitly use all filtered matches, including articles on other pages. These are keyword/filter matches, not a guarantee of relevance.')
+    selected_ids = st.multiselect('Articles to use', list(by_id),
+                                  format_func=lambda value: by_id[value]['title'], key='research_selected_ids',
+                                  disabled=all_matches, placeholder='Choose articles about the same topic or event',
+                                  help='Nothing is included in a question until you select it. Clear this selection to stop using these articles.')
+    candidates = library_page(page_size=100, **filters)['items'] if all_matches else items
+    research_ids = [article['id'] for article in candidates] if all_matches else selected_ids
+    if research_ids:
+        with st.expander(f'Review {len(research_ids)} selected articles'):
+            for article in candidates:
+                if article['id'] in research_ids:
+                    st.text(article['title'])
+            st.caption('Included because you selected these sources or chose every filtered match. '
+                       'Sharing a collection does not establish a connection between stories.')
+    else:
+        st.caption('No articles selected for questions or batch summaries. You can still open one article summary below.')
+    st.subheader('2. Choose a task')
+    insights_tab, ask_tab = st.tabs(['Article summaries', 'Ask a question'])
     with ask_tab:
-        st.html('<div class="section-title" style="margin-top:22px">What would you like to understand?</div>')
-        with st.expander('Choose sources'):
-            by_id = {article['id']: article for article in items}
-            if 'research_selected_ids' in st.session_state:
-                st.session_state['research_selected_ids'] = [value for value in st.session_state['research_selected_ids'] if value in by_id]
-            selected_ids = st.multiselect('Articles on this page (empty means all shown)', list(by_id),
-                                          format_func=lambda value: by_id[value]['title'], key='research_selected_ids')
-            if result['total'] > 100:
-                st.session_state['research_all_matches'] = False
-            all_matches = st.checkbox('Include every match (up to 100 articles)',
-                                       disabled=result['total'] > 100, key='research_all_matches')
-            st.caption('Choose a collection, search, or publisher to narrow the sources. Each question can research up to 100 articles.')
-        candidates = library_page(page_size=100, **filters)['items'] if all_matches and result['total'] <= 100 else items
-        research_ids = selected_ids or [article['id'] for article in candidates]
-        st.caption(f"This question will search {len(research_ids):,} articles out of {overview['total']:,} in your library. Other articles are outside this answer's scope.")
+        st.write('Ask about the articles selected above. You do not need to generate their summaries first.')
+        st.caption(f"This question will search {len(research_ids):,} {'article' if len(research_ids) == 1 else 'articles'} out of {overview['total']:,} in your library. Other articles are outside this answer's scope.")
         scope = (model, embedding_model, tuple(research_ids), overview['revision'], client.base_url,
                  CONTEXT_POLICY_VERSION)
         with st.form('article_question'):
             question = st.text_area('Research question', max_chars=2000, height=110,
-                                    placeholder='What are the main findings across these selected articles?')
+                                    placeholder='For example: What did these reports announce, and which details do they support?')
             action = st.radio('Research mode', ['Answer with citations', 'Search passages'], horizontal=True)
+            st.caption('Answer with citations writes a source-backed response. Search passages only finds original excerpts.')
             fresh = st.checkbox('Generate a fresh result', value=False,
                                 help='Otherwise an identical question reuses its last result in this session, while the sources, models and mode are unchanged.')
             submitted = st.form_submit_button('Research', type='primary', icon=':material/arrow_upward:',
-                                              disabled=bool(error) or not embedding_model)
+                                              disabled=bool(error) or not embedding_model or not research_ids)
+        if not research_ids:
+            st.info('Choose articles above before asking a question. Unselected articles will not be searched.')
         if not embedding_model or error:
-            st.caption('Saved insights remain available in the next tab. Connect a model in Research settings to ask a new question.')
+            st.caption('Saved summaries remain available in Article summaries. Connect a model in Research settings below to ask a new question.')
         reused = False
         if submitted:
             previous = st.session_state.get('ai_research')
@@ -394,17 +435,23 @@ def render_intelligence(overview):
                           and previous['result']['question'] == question.strip())
         if submitted and not reused:
             try:
+                if not research_ids:
+                    raise IntelligenceError('Choose at least one article before asking a question.')
                 if action == 'Answer with citations' and not ready:
                     raise IntelligenceError('Choose an installed analysis model in Research settings.')
                 started = perf_counter()
                 selected_articles = load_articles(research_ids)
                 with st.spinner('Reading the relevant passages...'):
+                    observed_names = [embedding_model] if action == 'Search passages' else [model, embedding_model]
+                    before_models = observe_models(client.base_url, observed_names)
                     if action == 'Search passages':
                         trace = {}
                         answer = dict(question=question.strip(), model=embedding_model, passages=semantic_search(
                             question, selected_articles, embedding_model, client, stats=trace), retrieval=trace)
                     else:
                         answer = answer_question(question, selected_articles, model, embedding_model, client)
+                    answer = dict(answer, model_observation=model_observation(
+                        before_models, observe_models(client.base_url, observed_names)))
                     answer = dict(answer, elapsed_seconds=perf_counter() - started,
                         completed_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
                         source_scope=dict(selected_article_ids=list(research_ids),
@@ -423,13 +470,15 @@ def render_intelligence(overview):
     with insights_tab:
         heading, analyze = st.columns([3, 1], vertical_alignment='center')
         with heading:
-            st.html('<div class="section-title" style="margin-top:20px">Article insights</div>'
-                    f'<div class="section-note">Browse {len(items)} sources on this page · {escape(model)}</div>')
+            st.html('<div class="section-title" style="margin-top:20px">Article summaries</div>'
+                    '<div class="section-note">Get a summary, key takeaways and cited passages for each article. '
+                    'This does not compare publishers or find a connection between different stories.</div>')
         with analyze:
-            if st.button('Analyze this page', type='primary', disabled=not ready, width='stretch'):
-                targets = [article for article in items if force or not article['insight']]
+            if st.button('Summarize selected articles', key='research_summarize_selected', type='primary',
+                         disabled=not ready or not research_ids or len(research_ids) > 25, width='stretch'):
+                targets = [article for article in candidates if article['id'] in research_ids and (force or not article['insight'])]
                 if not targets:
-                    st.info('Every article on this page already has a current analysis.')
+                    st.info('Every selected article already has a current summary.')
                 else:
                     progress = st.progress(0, text='Preparing analysis...')
                     for index, article in enumerate(targets, 1):
@@ -441,12 +490,14 @@ def render_intelligence(overview):
                             st.error(f"{article['title']}: {exc}")
                         progress.progress(index / len(targets), text=f'Processed {index} of {len(targets)} articles')
                     st.rerun()
-        by_id = {article['id']: article for article in items}
+        st.caption('For several summaries, select up to 25 articles above. To read or summarize just one, choose it below.')
+        summary_items = [article for article in candidates if article['id'] in research_ids] if research_ids else items
+        by_id = {article['id']: article for article in summary_items}
         chosen = st.selectbox('Article', list(by_id), format_func=lambda value: by_id[value]['title'])
         article = get_article(chosen)
         if article:
             insight = load_insight(article, model, ANALYSIS_VERSION)
-            if st.button('Analyze this article', key=f'analyze_{chosen}', disabled=not ready):
+            if st.button('Summarize this article', key=f'analyze_{chosen}', disabled=not ready):
                 try:
                     with st.spinner('Reading and summarizing...'):
                         analyze_article(article, model, client, force=force)
@@ -456,4 +507,5 @@ def render_intelligence(overview):
             if insight:
                 render_saved_insight(article, insight)
             else:
-                empty_state('Ready when you are', "Connect a local model to generate this article's first analysis.")
+                empty_state('No summary saved for this article',
+                            'Choose Summarize this article to generate one.' if ready else 'Connect a local model in Research settings below to generate a summary.')

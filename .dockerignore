@@ -4,6 +4,7 @@
 !requirements.txt
 !requirements-dev.txt
 !requirements-linux-lock.txt
+!requirements-topics.txt
 !LICENSE
 !cli.py
 !app/
@@ -12,6 +13,7 @@
 !scripts/seed_demo.py
 !scripts/check_install.py
 !scripts/smoke_install.py
+!scripts/topic_validation.py
 !scripts/evaluate_extraction.py
 !scripts/evaluate_research.py
 !scripts/research_eval/

@@ -3,6 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 import pytest
+import requests
 from streamlit.testing.v1 import AppTest
 
 from app import storage
@@ -85,6 +86,7 @@ def test_research_answer_has_both_exports_without_another_model_call(dashboard):
             patch('app.ai_dashboard.answer_question', return_value=answer) as generate:
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('What is saved?')
         app.button(key='FormSubmitter:article_question-Research').click().run()
         assert not app.exception and generate.call_count == 1
@@ -92,6 +94,100 @@ def test_research_answer_has_both_exports_without_another_model_call(dashboard):
         assert {'research_export_markdown', 'research_export_json'} <= keys
         app.run()
         assert not app.exception and generate.call_count == 1
+
+
+@pytest.mark.parametrize('identity_state', ['stable', 'changed', 'unavailable'])
+def test_new_research_observes_selected_models_and_reuse_save_reopen_make_no_observations(dashboard, identity_state):
+    from tests.test_model_health import manifest, reply
+    from app import research_sessions
+    from app.research_export import research_exports
+    import json
+    before = [manifest('qwen3:8b'), manifest('qwen3-embedding:0.6b')]
+    after = [manifest('qwen3:8b', digest='b' * 64 if identity_state == 'changed' else 'a' * 64),
+             manifest('qwen3-embedding:0.6b')]
+    metadata = [reply({'models': before}), reply({'models': after}) if identity_state != 'unavailable' else requests.Timeout()]
+    answer = dict(question='What is saved?', model='qwen3:8b', supported=True,
+        claims=[dict(text='Saved evidence.', sources=['offline:P1'])],
+        passages=[dict(id='offline:P1', article_id='offline', title='Offline research',
+                       text='Saved evidence.', url='https://example.org/research')])
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b', 'qwen3-embedding:0.6b'], None)), \
+            patch('app.ai_dashboard.answer_question', return_value=answer) as generate, \
+            patch('app.model_health.requests.get', side_effect=metadata) as get:
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        get.assert_not_called()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
+        get.assert_not_called()
+        app.text_area[0].set_value('What is saved?')
+        app.button(key='FormSubmitter:article_question-Research').click().run()
+        assert not app.exception and generate.call_count == 1 and get.call_count == 2
+        result = app.session_state['ai_research']['result']
+        observed = result['model_observation']
+        assert observed['state'] == identity_state and 'model_observation' not in answer
+        assert set(observed['before']['models']) == {'qwen3:8b', 'qwen3-embedding:0.6b'}
+        if identity_state == 'changed':
+            assert any('versions changed during this run' in warning.value for warning in app.warning)
+        elif identity_state == 'unavailable':
+            assert any('observations were incomplete' in caption.value for caption in app.caption)
+        app.button(key='FormSubmitter:article_question-Research').click().run()
+        assert not app.exception and get.call_count == 2 and generate.call_count == 1
+        app.button(key='research_save_result').click().run()
+        app.button(key='research_view_saved').click().run()
+        assert not app.exception and get.call_count == 2 and generate.call_count == 1
+    ident = research_sessions.sessions_page()['items'][0]['id']
+    loaded = research_sessions.load_session(ident)['result']
+    assert loaded['model_observation'] == observed
+    exported = json.loads(research_exports(loaded)[1])
+    assert exported['model_observation'] == observed
+
+
+def test_fresh_result_reobserves_models_without_rewriting_the_previous_metadata(dashboard):
+    import copy
+    from tests.test_model_health import manifest, reply
+    answer = dict(question='What is saved?', model='qwen3:8b', supported=False, claims=[],
+        passages=[dict(id='offline:P1', article_id='offline', title='Offline research',
+                       text='Saved evidence.', url='https://example.org/research')])
+    inventories = [reply({'models': [manifest('qwen3:8b', digest=digest * 64),
+                                     manifest('qwen3-embedding:0.6b')]}) for digest in ('a', 'a', 'b', 'b')]
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b', 'qwen3-embedding:0.6b'], None)), \
+            patch('app.ai_dashboard.answer_question', return_value=answer) as generate, \
+            patch('app.model_health.requests.get', side_effect=inventories) as get:
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
+        app.text_area[0].set_value('What is saved?')
+        app.button(key='FormSubmitter:article_question-Research').click().run()
+        previous = app.session_state['ai_research']['result']
+        original = copy.deepcopy(previous)
+        next(box for box in app.checkbox if box.label == 'Generate a fresh result').check()
+        app.button(key='FormSubmitter:article_question-Research').click().run()
+        assert not app.exception and get.call_count == 4 and generate.call_count == 2
+        current = app.session_state['ai_research']['result']
+        assert previous == original and current['model_observation']['state'] == 'stable'
+        assert current['model_observation']['before']['models']['qwen3:8b']['digest'] == 'b' * 64
+        assert previous['model_observation']['before']['models']['qwen3:8b']['digest'] == 'a' * 64
+
+
+def test_passage_search_observes_only_the_embedding_model(dashboard):
+    from tests.test_model_health import manifest, reply
+    passage = dict(id='offline:P1', article_id='offline', title='Offline research',
+                   text='Saved evidence.', url='https://example.org/research')
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b', 'qwen3-embedding:0.6b'], None)), \
+            patch('app.ai_dashboard.semantic_search', return_value=[passage]) as search, \
+            patch('app.ai_dashboard.answer_question') as generate, \
+            patch('app.model_health.requests.get', side_effect=[reply({'models': [manifest('qwen3-embedding:0.6b')]}),
+                                                               reply({'models': [manifest('qwen3-embedding:0.6b')]})]) as get:
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
+        app.text_area[0].set_value('Find evidence')
+        next(radio for radio in app.radio if radio.label == 'Research mode').set_value('Search passages')
+        app.button(key='FormSubmitter:article_question-Research').click().run()
+        assert not app.exception and get.call_count == 2 and search.call_count == 1
+        generate.assert_not_called()
+        result = app.session_state['ai_research']['result']
+        assert 'supported' not in result
+        assert set(result['model_observation']['before']['models']) == {'qwen3-embedding:0.6b'}
 
 
 @pytest.fixture
@@ -112,8 +208,11 @@ def dashboard(tmp_path, monkeypatch):
     from app.ai_dashboard import _model_status
     _model_status.clear()
     with patch('app.ai_dashboard.OllamaClient.models',
-               side_effect=IntelligenceError('Ollama is offline for this test.')):
-        yield AppTest.from_file(Path(__file__).resolve().parents[1] / 'app' / 'dashboard.py').run(timeout=20)
+               side_effect=IntelligenceError('Ollama is offline for this test.')), \
+            patch('app.model_health.requests.get', side_effect=requests.ConnectionError()):
+        # Every functional navigation step gets the startup budget, including
+        # cold component imports on fresh or busy hosts. Latency is not asserted here.
+        yield AppTest.from_file(Path(__file__).resolve().parents[1] / 'app' / 'dashboard.py', default_timeout=20).run()
 
 
 def test_library_and_research_remain_usable_when_ollama_is_offline(dashboard):
@@ -124,7 +223,7 @@ def test_library_and_research_remain_usable_when_ollama_is_offline(dashboard):
     assert not app.warning
     app.button(key='nav_research').click().run()
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ['Ask library', 'Saved insights']
+    assert [tab.label for tab in app.tabs] == ['Article summaries', 'Ask a question']
     assert any('Ollama is offline' in warning.value for warning in app.warning)
     assert app.download_button[0].label == 'Export analysis'
 
@@ -330,6 +429,7 @@ def test_identical_research_reuses_last_answer_but_fresh_mode_and_changes_do_not
             patch('app.ai_dashboard.answer_question', return_value=client_answer.copy()) as answer:
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('What is saved?')
         submit = 'FormSubmitter:article_question-Research'
         app.button(key=submit).click().run()
@@ -364,6 +464,7 @@ def test_failed_new_research_preserves_completed_answer_and_can_be_cleared(dashb
             patch('app.ai_dashboard.answer_question', side_effect=[_completed_research_fixture(), IntelligenceError('Request timed out.')]) as generate:
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('First question')
         submit = 'FormSubmitter:article_question-Research'
         app.button(key=submit).click().run()
@@ -385,6 +486,7 @@ def test_offline_models_and_empty_filters_keep_last_result_exportable(dashboard)
             patch('app.ai_dashboard.answer_question', return_value=_completed_research_fixture()) as generate:
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('First question')
         app.button(key='FormSubmitter:article_question-Research').click().run()
         original = app.session_state['ai_research']['result']
@@ -407,6 +509,7 @@ def test_completed_research_captures_loaded_source_fingerprints_and_survives_rev
         original = storage.get_article('offline')
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('First question')
         app.button(key='FormSubmitter:article_question-Research').click().run()
         result = app.session_state['ai_research']['result']
@@ -427,6 +530,7 @@ def test_passage_search_records_the_embedding_model_and_source_scope(dashboard):
             patch('app.ai_dashboard.semantic_search', return_value=_completed_research_fixture()['passages']) as search:
         app = dashboard
         app.button(key='nav_research').click().run()
+        app.multiselect(key='research_selected_ids').set_value(['offline']).run()
         app.text_area[0].set_value('Find original saved evidence')
         app.radio[0].set_value('Search passages')
         app.button(key='FormSubmitter:article_question-Research').click().run()
@@ -480,7 +584,9 @@ def test_research_topics_follow_search_and_clear_incompatible_selections(dashboa
     assert not app.exception
     assert app.multiselect(key='research_topics').value == []
     assert app.multiselect(key='research_topics').options == ['Ancient Roman Glass']
-    assert any('search 1 articles' in caption.value for caption in app.caption)
+    assert any('search 0 articles' in caption.value for caption in app.caption)
+    app.multiselect(key='research_selected_ids').set_value(['glass']).run()
+    assert any('search 1 article' in caption.value for caption in app.caption)
     app.text_input(key='research_search').set_value('missing-source').run()
     assert not app.exception
     assert app.multiselect(key='research_topics').options == []
@@ -499,6 +605,71 @@ def test_library_topics_are_scoped_and_ai_filters_require_opt_in(dashboard):
     assert not any(widget.key == 'library_ai_coverage' for widget in app.checkbox)
     assert not any(widget.key in ('library_lens', 'library_entity') for widget in app.selectbox)
     assert len([button for button in app.button if button.key and button.key.startswith('read_')]) == 1
+
+
+def test_research_requires_explicit_sources_and_only_sends_the_selected_article(dashboard):
+    original = storage.get_article('offline')
+    storage.upsert(dict(original, id='sap', url='https://example.org/sap', title='SAP cloud collaboration',
+                        text='SAP reports a cloud collaboration.'))
+    storage.upsert(dict(original, id='spacex', url='https://example.org/spacex', title='SpaceX satellite launch',
+                        text='SpaceX reports a satellite launch.'))
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b', 'qwen3-embedding:0.6b'], None)), \
+            patch('app.ai_dashboard.answer_question', return_value=_completed_research_fixture()) as generate:
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        submit = 'FormSubmitter:article_question-Research'
+        assert not app.exception and app.button(key=submit).disabled
+        assert app.multiselect(key='research_selected_ids').value == []
+        assert app.expander[-1].label == 'Research settings'
+        assert [tab.label for tab in app.tabs] == ['Article summaries', 'Ask a question']
+        generate.assert_not_called()
+        app.multiselect(key='research_selected_ids').set_value(['sap']).run()
+        assert not app.button(key=submit).disabled
+        summary_article = next(widget for widget in app.selectbox if widget.label == 'Article')
+        assert summary_article.options == ['SAP cloud collaboration']
+        app.text_area[0].set_value('What did SAP announce?')
+        app.button(key=submit).click().run()
+        assert not app.exception and generate.call_count == 1
+        assert [article['id'] for article in generate.call_args.args[1]] == ['sap']
+        assert app.session_state['ai_research']['result']['source_scope']['selected_article_ids'] == ['sap']
+        app.multiselect(key='research_selected_ids').set_value([]).run()
+        assert app.button(key=submit).disabled and generate.call_count == 1
+        assert app.download_button(key='research_export_json')  # Original result remains inspectable.
+
+
+def test_research_source_context_change_revokes_include_all_and_selected_sources(dashboard):
+    _add_filter_context_articles()
+    app = dashboard
+    app.button(key='nav_research').click().run()
+    app.checkbox(key='research_all_matches').check().run()
+    assert app.multiselect(key='research_selected_ids').disabled
+    assert any('search 3 articles' in item.value for item in app.caption)
+    app.text_input(key='research_search').set_value('layoff').run()
+    assert not app.exception
+    assert not app.checkbox(key='research_all_matches').value
+    assert not app.multiselect(key='research_selected_ids').disabled
+    assert app.multiselect(key='research_selected_ids').value == []
+    app.multiselect(key='research_selected_ids').set_value(['layoffs']).run()
+    app.text_input(key='research_search').set_value('glass').run()
+    assert not app.exception and app.multiselect(key='research_selected_ids').value == []
+    assert any('search 0 articles' in item.value for item in app.caption)
+
+
+def test_article_summary_needs_only_chat_and_batch_uses_only_selected_sources(dashboard):
+    original = storage.get_article('offline')
+    storage.upsert(dict(original, id='sap', url='https://example.org/sap', title='SAP cloud collaboration'))
+    with patch('app.ai_dashboard._model_status', return_value=(['qwen3:8b'], None)), \
+            patch('app.ai_dashboard.analyze_article') as summarize, \
+            patch('app.ai_dashboard.semantic_search', side_effect=AssertionError('Summaries need no embeddings')):
+        app = dashboard
+        app.button(key='nav_research').click().run()
+        assert app.button(key='research_summarize_selected').disabled
+        app.multiselect(key='research_selected_ids').set_value(['sap']).run()
+        assert app.button(key='FormSubmitter:article_question-Research').disabled
+        assert not app.button(key='research_summarize_selected').disabled
+        app.button(key='research_summarize_selected').click().run()
+        assert not app.exception and summarize.call_count == 1
+        assert summarize.call_args.args[0]['id'] == 'sap'
 
 
 def test_research_unanalyzed_scope_has_no_unrelated_topic_fallback(dashboard):
@@ -697,3 +868,67 @@ def test_completed_discovery_batch_opens_its_exact_collection(dashboard):
     assert app.session_state['workspace_view'] == 'Library'
     assert app.selectbox(key='library_collection').value == collection_id
     assert app.button(key='read_offline')
+
+
+def test_saved_research_reopens_in_a_new_offline_app_without_model_calls_and_can_be_deleted(dashboard):
+    from app import research_sessions
+    app = dashboard
+    app.button(key='nav_research').click().run()
+    answer = _completed_research_fixture()
+    app.session_state['ai_research'] = dict(scope=None, result=answer, action='Answer with citations')
+    app.run()
+    app.button(key='research_save_result').click().run()
+    assert not app.exception and research_sessions.sessions_page()['total'] == 1
+    ident = research_sessions.sessions_page()['items'][0]['id']
+    app.button(key='research_clear_result').click().run()
+    assert research_sessions.sessions_page()['total'] == 1
+    fresh = AppTest.from_file(Path(__file__).resolve().parents[1]/'app/dashboard.py', default_timeout=20)
+    fresh.session_state['workspace_view'] = 'Research'
+    fresh.session_state['research_workspace_view'] = 'saved'
+    with patch('app.ai_dashboard._model_status', side_effect=AssertionError('Saved research must stay offline')) as model_status:
+        fresh.run()
+        assert not fresh.exception
+        model_status.assert_not_called()
+        assert fresh.download_button(key='saved_' + ident + '_export_json')
+        assert research_sessions.load_session(ident)['result'] == answer
+        fresh.checkbox(key='research_delete_confirm_' + ident).check().run()
+        fresh.button(key='research_delete_saved').click().run()
+        assert not fresh.exception and research_sessions.sessions_page()['total'] == 0
+    assert storage.library_overview()['total'] == 1
+
+
+def test_prepared_library_backup_is_invalidated_when_research_is_saved(dashboard):
+    from app import research_sessions
+    def backup_page():
+        from app.backup_view import backup_dialog
+        backup_dialog()
+    app = AppTest.from_function(backup_page, default_timeout=20).run()
+    next(button for button in app.button if button.label == 'Prepare full backup').click().run()
+    assert app.session_state['portable_backup']['stats']['research_sessions'] == 0
+    before = storage.library_overview()['revision']
+    research_sessions.save_result(_completed_research_fixture())
+    assert storage.library_overview()['revision'] == before
+    app.run()
+    assert not any(button.label == 'Download full library backup' for button in app.download_button)
+    next(button for button in app.button if button.label == 'Prepare full backup').click().run()
+    assert not app.exception and app.session_state['portable_backup']['stats']['research_sessions'] == 1
+
+
+def test_article_deletion_explains_and_purges_linked_saved_research_and_active_answer(dashboard):
+    from app import research_sessions
+    answer = _completed_research_fixture()
+    ident = research_sessions.save_result(answer)
+    def reader_page():
+        from app import storage
+        from app.library_view import reading_room
+        item = storage.get_article('offline')
+        if item:
+            reading_room(item, storage.load_insight(item, 'qwen3:8b', '1'))
+    app = AppTest.from_function(reader_page, default_timeout=20)
+    app.session_state['ai_research'] = dict(scope=None, result=answer, action='Answer with citations')
+    app.run()
+    assert any('1 saved research result' in message.value for message in app.warning)
+    app.checkbox(key='delete_confirm_offline').check().run()
+    app.button(key='delete_article_offline').click().run()
+    assert not app.exception and research_sessions.load_session(ident) is None
+    assert 'ai_research' not in app.session_state

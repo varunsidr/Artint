@@ -90,3 +90,28 @@ def test_export_preserves_original_scope_and_completion_time(answer):
     assert 'Search model: local:embedding' in markdown
     snapshot = json.loads(exported)
     assert snapshot['source_scope'] == scope and snapshot['completed_at'] == answer['completed_at']
+
+
+@pytest.mark.parametrize('state,expected', [('changed', 'Installed model versions changed during this run'),
+                                          ('unavailable', 'Model-version observations were incomplete'),
+                                          ('stable', None)])
+def test_model_observation_notes_travel_with_brief_without_rendering_server_metadata(answer, state, expected):
+    observation = dict(version='ollama-model-observation-v1', state=state,
+                       notice='<script>server text</script> ![asset](https://example.org/image)')
+    answer['model_observation'] = observation
+    original = copy.deepcopy(answer)
+    markdown, exported = research_exports(answer)
+    assert json.loads(exported)['model_observation'] == observation and answer == original
+    if expected:
+        assert expected in markdown
+    else:
+        assert 'Run note:' not in markdown
+    assert 'server text' not in markdown and 'https://example.org/image' not in markdown
+    assert '<img' not in MarkdownIt('commonmark', {'html': True}).render(markdown)
+
+
+@pytest.mark.parametrize('observation', [None, [], {'state': 'changed'},
+                                       {'version': 'unknown', 'state': 'changed'}])
+def test_legacy_or_unknown_model_observations_do_not_invent_a_run_note(answer, observation):
+    answer['model_observation'] = observation
+    assert 'Run note:' not in research_exports(answer)[0]

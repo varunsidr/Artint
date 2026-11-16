@@ -6,4 +6,18 @@ The application requests `chromium_sandbox=True` and never retries without sandb
 
 The default runtime target excludes test dependencies. `docker build --target test` creates a separate validation image. Build and browser installation need network access; fixture tests do not contact publishers or model services. Dependency versions and the Python base digest are pinned; apt repository state and build outputs are not claimed to be bit-for-bit reproducible.
 
+## Validate optional topic discovery
+
+From the repository root, with Docker available:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/validate_container.py --topics --report output/container-topics/report.json
+```
+
+This builds runtime/test images with `INSTALL_TOPICS=1` in a random disposable Compose project. It verifies the normal confined runtime, source/PDF/research restoration and recreation, then seeds a separately named collection of original fictional topic articles into that disposable library. The test image serves a loopback-only scripted embedding endpoint in the runtime's shared network namespace. The browser exercises discovery, JSON export, point-to-theme selection and cached reruns; a second app recreation checks that another discovery can reuse all its vectors.
+
+No host Ollama, publisher fetch, model download or container GPU is used by this validation. Its original fixture validates the protocol, runtime backend and UI; it does not measure model quality. The seeder requires the explicit install-smoke flag, an existing valid installation marker and the original one-article fixture, and refuses an unrelated library. The validator checks pre-existing container/volume identities after removing only its owned project containers, network and volumes. Image/build caches remain available for later builds.
+
+Without `--topics`, validation explicitly selects the lightweight runtime even if `ARTINT_TOPICS` was set in the caller's environment. CI defines separate `base` and `topics` container jobs; editing that workflow is not evidence of a hosted pass.
+
 Chromium 1248 and FFmpeg 1013 are copied from the digest-pinned official Playwright Python 1.64.1 image into the Python 3.13 runtime. Firefox/WebKit and the upstream Python installation are not copied. This avoids an additional browser-CDN download during the build. Update the asset revisions and image digest together with `playwright` in the dependency files. The application uses full Chromium's current headless mode.

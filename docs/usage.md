@@ -10,6 +10,8 @@ criteria, and current limitations. Benchmark targets in those documents are not 
 
 ## Stack and why
 
+Optional **Analytics → Topic discovery (experimental)** discovers corpus themes with article embeddings rather than saved per-article labels. Install `requirements-topics.txt` in the native environment or opt into the container build with `ARTINT_TOPICS=1`. Choose a collection and select **Discover topics**; no model starts on navigation. Inspect the interactive map, representative/source copies, unassigned articles and actual sampled text, then download JSON. Results remain available after failed requests and show when their original source/scope is stale. [Topic discovery](topic-discovery.md) explains setup, source limits, publication-share calculations and the competitor/research comparison. This optional path changes no question-answer ranking or existing labels.
+
 - **Streamlit**: fastest dashboard/UI iteration, without a separate frontend.
 - **Trafilatura + BeautifulSoup**: article-body extraction, metadata, references, and links.
 - **Requests**: HTML fetching with timeouts, redirect checks, robots policy, and response size limit.
@@ -133,7 +135,7 @@ annotations for a different saved text revision are skipped. Existing PDFs are k
 PDFs can be restored, and unrelated destination files are never overwritten. Repeating a restore
 does not add duplicate articles or highlights. Restore does not contact publishers or a model service.
 
-Version 1 limits: 10,000 articles, 128 MB of JSON metadata, 20 MB per PDF, 250 MB compressed ZIP,
+Version 2 limits: 10,000 articles, 1,000 saved research results, 128 MB of JSON metadata, 20 MB per PDF, 250 MB compressed ZIP,
 512 MB expanded data, plus bounded record counts for annotations and caches. Restore uses exclusive
 file creation on a local filesystem supporting hard links. Caught failures roll back new records and
 files; crash-proof coordination across multiple app/CLI processes remains future operational work.
@@ -245,31 +247,37 @@ In a separate terminal:
 .\.venv\Scripts\python.exe -m streamlit run app/dashboard.py
 ```
 
-Open **Research** in the sidebar. Choose an installed local chat model under **Research settings**,
-and select the collection you want under **Research collection** to work with its saved sources alone,
-then open **Saved insights** and click **Analyze this page**
-to generate summaries, key takeaways, and topic labels for the saved articles. You can also
-analyze one article at a time, filter saved insights by topic, and download insights as JSON.
-Previously generated insights remain viewable when Ollama is offline. Research source search and
-pagination show 25 articles at a time. Analysis batches operate on that page rather than the entire library.
+Open **Research**, choose a **Research collection** or search a topic, then choose a task. **Article summaries** opens first: choose one **Article** and click **Summarize this article** for a summary, takeaways and topic labels with cited passages. For several summaries, select up to 25 under **Articles to use** and click **Summarize selected articles**. Selected sources also narrow the single-article selector. Previously saved summaries remain readable offline. The source list is paginated at 25 articles; nothing is implicitly selected for a question or batch job. **More source filters** and **Topic filters** are collapsed by default. Model configuration is under **Research settings**, below the main workspace. See the [short workflow guide and user feedback](research-workflow.md).
 
 From a reading room with no saved analysis, choose **Analyze in Research** to open that exact article. **Generate analysis** processes only that source and needs a chat model, not an embedding model. No analysis starts just by navigating. Your existing Library and Research filters are preserved; return to Library or the research source list when finished. Offline and deleted-source states explain the next action.
 
-For **Ask library**, choose an installed embedding model under **Research settings** and enter a question.
+For **Ask a question**, explicitly select articles under **Articles to use** and enter a question. You do not need to summarize them first. Choose an installed embedding model under **Research settings** if one is not connected.
 The **Search passages** mode finds related text by meaning. **Answer with citations** generates an
 answer from those retrieved passages and displays the original text for checking. You can
-limit research to selected articles. Questions search the shown page by default; **Choose sources**
-can narrow it or include every match when the filtered selection contains at most 100 articles.
-The scope count is shown before submission. This is **not whole-library semantic search** for
+inspect the selected titles under **Review selected articles**. An empty selector means no question sources; submission is disabled. **Include every match** explicitly uses all filtered articles, across pages, when there are at most 100. It disables individual selection while enabled. Changing filters or source pages clears the selection and include-all choice. The exact scope count is shown before submission; filter membership alone is not a guarantee that stories are related. This is **not whole-library semantic search** for
 collections above 100 articles: a persistent passage/vector index and background indexing remain planned.
 If the model finds insufficient evidence, the app
 shows that it cannot answer from the retrieved articles.
 
-Answer cards include expandable cited passages, with original-source links and saved text. Retrieval details show passages searched, embeddings reused/created and the original elapsed time. Submitting the same question, mode, source revision, models, endpoint and context-policy version reuses the last result in this session; select **Generate a fresh result** to run again. This is session reuse, not a persistent research history. Cache reads are batched and the embedding model remains loaded between input batches, then unloads after the final batch before answering. Model choice, output budget and retrieval ranking are unchanged. Hardware/model latency and independently reviewed answer quality remain separate measurements.
+Answer cards include expandable cited passages, with original-source links and saved text. Retrieval details show passages searched, embeddings reused/created and the original elapsed time. Submitting the same question, mode, source revision, models, endpoint and context-policy version reuses the last result in this session; select **Generate a fresh result** to run again. Reuse applies to the current browser session; **Save research** creates a separate durable snapshot. Cache reads are batched and the embedding model remains loaded between input batches, then unloads after the final batch before answering. Model choice, output budget and retrieval ranking are unchanged. Hardware/model latency and independently reviewed answer quality remain separate measurements.
 
-A failed new question keeps your last completed answer and its downloads. If the current source/model selection differs, the result is labelled as the previous completed result and shows its original scope/models. It also remains available when Ollama is offline or filters match no articles. **Clear research result** clears only this session answer and error; saved articles and analyses remain. Starting a new browser session or restarting the app can lose this session result, so download anything you want to keep.
+A failed new question keeps your last completed answer and its downloads. If the current source/model selection differs, the result is labelled as the previous completed result and shows its original scope/models. It also remains available when Ollama is offline or filters match no articles. **Clear research result** clears only this session answer and error; saved articles and analyses remain. Starting a new browser session or restarting the app can lose an unsaved result; choose **Save research** or download it to keep a copy.
 
-Use **Download research brief** for a Markdown answer with numbered citation links, original URLs and the exact cited saved passages. **Download full result** saves a versioned JSON snapshot with all retrieved passages and available model/context/retrieval metadata. New results also record the original UTC completion time, selected/searched article IDs, fingerprints of the loaded source copies, library revision, research mode and embedding model. Export time is separate from completion time. Markdown links normalize international domain names and encode Unicode paths; JSON preserves original URLs. Passage-search exports contain evidence without a generated answer; abstention exports explain the limited evidence. Exporting uses the current result without another model call or storage write, and the download does not rerun research. Claim/source markup is literal and unsafe links or missing citations prevent an incomplete export. These downloads are portable files, not an implemented persistent research-history feature or an independent fact check.
+Use **Download research brief** for a Markdown answer with numbered citation links, original URLs and the exact cited saved passages. **Download full result** saves a versioned JSON snapshot with all retrieved passages and available model/context/retrieval metadata. New results also record the original UTC completion time, selected/searched article IDs, fingerprints of the loaded source copies, library revision, research mode and embedding model. Export time is separate from completion time. Markdown links normalize international domain names and encode Unicode paths; JSON preserves original URLs. Passage-search exports contain evidence without a generated answer; abstention exports explain the limited evidence. Exporting uses the current result without another model call or storage write, and the download does not rerun research. Claim/source markup is literal and unsafe links or missing citations prevent an incomplete export. These downloads are portable files; **Save research** also keeps the result in this library. Neither saving nor exporting establishes claim faithfulness.
+
+### Save and reopen research
+
+New Ollama-generated summaries and answers also retain [request fingerprints](research-evaluation.md#request-fingerprints) in their JSON metadata: messages/schema hashes, requested settings for each context attempt, requested/reported model names and the runtime observed by the client. Full-result downloads, saved research and backups preserve these fields. Older results remain readable without them. Weight digests and reused embedding provenance are not verified, and matching fingerprints do not guarantee the same answer or establish claim support.
+
+New workspace questions and passage searches also take [model inventory observations](research-evaluation.md#model-inventory-observations-in-research) before and after the run, retaining the selected manifest digests and available quantization details. A version-change warning or incomplete-observation notice stays with the result and its brief; full details stay in JSON, saved research and backups. Metadata failure does not discard a completed answer. Reading, saving, exporting and reusing that result do not recheck models. **Generate a fresh result** takes new observations but does not rebuild cached search vectors; matching installed manifests do not prove the provenance of those vectors or the model's answer quality.
+
+Choose **Save research** below a completed cited answer, abstention or passage search. The button stores the exact question, answer, retrieved passages, original completion time, source selection/revisions and available model/context/retrieval metadata. Saving the same snapshot twice keeps one record. Saving does not call the model, and saved evidence is never added to later retrieval automatically.
+
+Open **Research → Saved research** to search saved questions and reopen them offline, including after restarting the app or restoring a backup. Lists show 20 questions per page. Original passages remain unchanged when source articles are updated; a changed-source notice identifies comparable revisions. Restored/remapped identifiers or absent fingerprints remain explicitly unverified. Available model tags/settings are retained; exact model weight digests and prompt identities are not newly inferred for older results.
+
+**Clear research result** clears the current browser result. **Remove saved research** deletes a persisted result and its quoted evidence after confirmation. Deleting an article also removes every saved research result linked to that article's original selection, and the reading room shows the affected count. Earlier downloaded exports/backups keep their copies. Article IDs remapped by restore are linked to the new local record without rewriting original passage/citation IDs.
+
+Limits are 1,000 results, 256 KB per result and 64 MB of result JSON per library. Export/delete older results to free capacity. Saved research is included in full library backup version 2; version-1 library backups remain restorable. Changes to research history invalidate prepared backups without changing the source-library revision used for question reuse.
 
 Under **Research settings**, **Check model status** explicitly reads the selected endpoint's installed models, runtime and loaded memory placement. The table follows light/dark appearance and scrolls within its panel on narrow screens. Installed, not loaded and unavailable are distinct states. GPU percentages are model-memory residency, not GPU utilization; a model that has unloaded is not thereby a CPU model. The report is a timestamped snapshot; repeat the check to update it. No inference is performed. See [startup/compute diagnostics](installation.md#model-readiness-and-residency-checks) for the CLI and compatibility limits.
 
@@ -309,7 +317,7 @@ can take longer, especially on a CPU.
 3. Create **one selectable-text PDF per article**. Includes original publisher URL as clickable citation [1], retrieval timestamp and page numbers. Markdown web links become clean clickable labels; basic headings, emphasis, lists, quotes, code, and tables are rendered when present in the saved text. Raw HTML stays literal text. Generation atomically replaces the previous file only after rendering succeeds.
 4. Browse PDFs individually or download the current page's PDFs as a ZIP; export metadata for all matching articles as CSV.
 5. **Analytics view**: general collection/query/date/publisher/topic/status filters; daily or monthly activity, saved topic labels, analysis coverage, reading profiles, publisher mix, 12-row notebook and matching CSV. The optional AI investment view adds six lenses, company co-mentions and concern/countercase excerpts. The publisher selector includes every publisher in the collection.
-6. **Research view**: local summaries, takeaways, topic filters, semantic search, and source-grounded questions. Saved insights remain accessible offline; model controls are grouped in Research settings.
+6. **Research view**: Article summaries and Ask a question are separate tasks. Questions and batch summaries use explicit sources; saved summaries/research remain accessible offline. Model controls follow the main workspace under Research settings.
 
 ## What this MVP deliberately does not do
 
@@ -369,7 +377,7 @@ Library browsing uses SQLite FTS5, indexed sorting/filtering, and bounded result
 text is fetched for reading or a scoped research operation. Dashboard totals and analysis counts are
 computed in SQL; saved-insight lookup does not open a connection per article.
 
-The first connection upgrades an existing database to schema version 6 in one transaction and makes
+The first connection upgrades an existing database to schema version 7 in one transaction and makes
 a pre-upgrade SQLite backup under `data/backups/`. It backfills content fingerprints and publisher keys,
 builds the full-text index, and installs mutation triggers. Version 2 adds research collections and
 content-versioned coverage signals; a version-1 upgrade preserves the existing full-text index and caches.

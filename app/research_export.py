@@ -70,6 +70,14 @@ def research_exports(result):
             lines += ['Search model: ' + _literal(source_scope['embedding_model']), '']
     if isinstance(result.get('completed_at'), str):
         lines += ['Result completed: ' + _literal(result['completed_at']), '']
+    observation = result.get('model_observation')
+    if isinstance(observation, dict) and observation.get('version') == 'ollama-model-observation-v1':
+        if observation.get('state') == 'changed':
+            lines += ['Run note: Installed model versions changed during this run. Inspect the evidence and generate '
+                      'a fresh result before comparing runs. Cached search vectors remain unverified.', '']
+        elif observation.get('state') == 'unavailable':
+            lines += ['Run note: Model-version observations were incomplete for this result. '
+                      'The saved passages remain available for inspection.', '']
     lines += ['## Findings', '']
     if result.get('supported') is False:
         lines += ['The retrieved saved passages did not provide enough evidence to answer this question.', '']

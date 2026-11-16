@@ -5,7 +5,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from app import library_backup, storage
+from app import library_backup, research_sessions, storage
 
 
 def open_backup():
@@ -24,10 +24,10 @@ def backup_dialog():
     backup, restore = st.tabs(['Create backup', 'Restore backup'])
     with backup:
         st.write('Keep your research together.')
-        st.caption('Includes saved article text, notes, tags, highlights, collections, saved analyses, cached search vectors and managed PDFs. Import jobs are not included.')
+        st.caption('Includes saved article text, notes, tags, highlights, collections, saved analyses, saved research with its original evidence, cached search vectors and managed PDFs. Import jobs are not included.')
         with storage.connect() as con:
             revision = con.execute('SELECT revision FROM library_state WHERE id=1').fetchone()[0]
-        scope = (str(storage.DB.resolve()), revision)
+        scope = (str(storage.DB.resolve()), revision, research_sessions.revision())
         if st.button('Prepare full backup', type='primary'):
             try:
                 with st.spinner('Preparing your library backup…'):
@@ -40,10 +40,10 @@ def backup_dialog():
         if prepared and prepared['scope'] == scope:
             stats = prepared['stats']
             st.download_button('Download full library backup', prepared['blob'], file_name=prepared['name'], mime='application/zip', type='primary')
-            st.caption(f"{stats['articles']:,} articles · {stats['pdfs']:,} PDFs · {len(prepared['blob']) / 1024**2:.1f} MB")
+            st.caption(f"{stats['articles']:,} articles · {stats['pdfs']:,} PDFs · {stats['research_sessions']:,} saved research · {len(prepared['blob']) / 1024**2:.1f} MB")
             if stats['missing_pdfs']:
                 st.info(f"{stats['missing_pdfs']} reading PDFs were unavailable or outside the managed folder. Their article text and annotations are included.")
-        st.caption('Version 1 supports up to 10,000 articles, 128 MB of metadata, 20 MB per PDF and a 250 MB ZIP. Large backups may take a moment.')
+        st.caption('Version 2 supports up to 10,000 articles, 1,000 saved research results, 128 MB of metadata, 20 MB per PDF and a 250 MB ZIP. Version-1 backups can also be restored.')
     with restore:
         st.write('Restore missing research without replacing your current copies.')
         st.caption('Existing article text and nonempty notes are kept. Tags, nonduplicate highlights and collection memberships are merged for matching saved text. Changed copies are left alone.')
@@ -64,13 +64,14 @@ def backup_dialog():
             if checked.get('sha256') == fingerprint:
                 preview = checked['preview']
                 st.info(f"{preview['new']:,} new articles · {preview['existing']:,} already present · {preview['notes']:,} notes · {preview['highlights']:,} highlights in this backup")
+                st.caption(f"{preview['research_sessions']:,} saved research results, including original quoted evidence. Matching snapshots are restored once.")
                 if preview['changed_text']:
                     st.warning(f"{preview['changed_text']} existing copies have different text. Their saved text and annotations will be kept.")
                 if st.button('Restore missing data', type='primary'):
                     try:
                         with st.spinner('Restoring your research…'):
                             result = library_backup.restore_backup(blob)
-                        st.session_state['library_notice'] = f"Restored {result['articles']} articles, {result['notes']} notes, {result['highlights']} highlights and {result['pdfs']} PDFs. Existing copies were kept."
+                        st.session_state['library_notice'] = f"Restored {result['articles']} articles, {result['notes']} notes, {result['highlights']} highlights, {result['pdfs']} PDFs and {result['research_sessions']} saved research results. Existing copies were kept."
                         if result['annotation_limit_skips']:
                             st.session_state['library_notice'] += f" {result['annotation_limit_skips']} tags/highlights could not be merged because an article reached its annotation limit. They remain in your backup."
                         st.session_state.pop('portable_backup', None)

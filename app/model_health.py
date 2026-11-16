@@ -1,4 +1,5 @@
 """Read-only Ollama inventory/runtime/residency checks; never load a model."""
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
@@ -88,6 +89,55 @@ def memory_share_label(memory):
         if percent < 0.1:
             return '<0.1%'
     return f'{percent:.1f}'.rstrip('0').rstrip('.') + '%'
+
+
+def observe_models(base_url, names):
+    """Observe only selected installed manifests; never infer cached-vector identity."""
+    if (not isinstance(names, (list, tuple)) or not 1 <= len(names) <= 2
+            or any(not isinstance(name, str) or not name.strip() or len(name) > 512 for name in names)):
+        raise ValueError('Observe one or two explicitly selected model names.')
+    selected = dict.fromkeys(names)
+    snapshot = dict(checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        state='unavailable', models={name: dict(installed=None, digest=None, details={}) for name in selected},
+        error=None)
+    try:
+        rows = _models(_metadata(_endpoint(base_url), '/api/tags'))
+        matches = [row for row in rows if row['name'] in selected]
+        if len({row['name'] for row in matches}) != len(matches):
+            raise ModelHealthError('Ollama returned duplicate selected model names.')
+        by_name = {row['name']: row for row in matches}
+        for name in selected:
+            row = by_name.get(name)
+            item = snapshot['models'][name]
+            item['installed'] = row is not None
+            if row is None:
+                continue
+            digest = row.get('digest')
+            item['digest'] = digest if isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest) else None
+            details = row.get('details')
+            if isinstance(details, dict):
+                item['details'] = {key: value for key in ('format', 'family', 'parameter_size', 'quantization_level')
+                    if isinstance((value := details.get(key)), str) and 0 < len(value) <= 128}
+        snapshot['state'] = 'complete' if all(item['digest'] for item in snapshot['models'].values()) else 'incomplete'
+    except (ModelHealthError, ValueError) as exc:
+        snapshot['error'] = str(exc)
+    return snapshot
+
+
+def model_observation(before, after):
+    """Compare observed manifest digests, without certifying inference or cache weights."""
+    left, right = before['models'], after['models']
+    if set(left) != set(right):
+        raise ValueError('Model observations need the same selected names.')
+    changed = any((type(left[name]['installed']) is bool and type(right[name]['installed']) is bool
+                   and left[name]['installed'] != right[name]['installed'])
+                  or (left[name]['digest'] is not None and right[name]['digest'] is not None
+                      and left[name]['digest'] != right[name]['digest']) for name in left)
+    state = 'changed' if changed else 'stable' if before['state'] == after['state'] == 'complete' else 'unavailable'
+    return dict(version='ollama-model-observation-v1', state=state,
+        before=deepcopy(before), after=deepcopy(after),
+        notice='Selected installed-manifest observations only; stable digests do not verify the weights '
+               'used by inference, server defaults or reused embeddings. Embedding cache keys remain model tags.')
 
 
 def inspect_ollama(base_url=None, *, chat_model='qwen3:8b', embedding_model='qwen3-embedding:0.6b'):

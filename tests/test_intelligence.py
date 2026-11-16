@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from unittest.mock import Mock, patch
 
@@ -270,6 +271,12 @@ def test_underestimated_request_retries_complete_prompt_once_at_16k(status):
     assert first['messages'][1]['content'].startswith('Original evidence: 日本語 😀')
     assert client.last_generation['attempts'][0]['status'] == 'context_exceeded'
     assert client.last_generation['context_window'] == 16384
+    attempts = client.last_generation['attempts']
+    assert attempts[0]['request_sha256'] != attempts[1]['request_sha256']
+    assert [attempt['options']['num_ctx'] for attempt in attempts] == [8192, 16384]
+    for attempt, payload in zip(attempts, (first, second)):
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        assert attempt['request_sha256'] == hashlib.sha256(encoded).hexdigest()
 
 
 def test_actual_token_count_can_expand_context_to_preserve_answer_space():
@@ -340,3 +347,82 @@ def test_saved_analysis_and_research_trace_include_actual_context(article):
         answer = answer_question('What is reported?', [article], 'chat', 'embed', client)
     assert answer['generation']['prompt_tokens'] == 350
     assert answer['generation']['context_window'] == 8192
+
+
+def test_generation_fingerprints_actual_payload_without_extra_requests_or_prompt_copies():
+    client = OllamaClient()
+    reply = response({'value': 42})
+    reply.json.return_value['model'] = 'chat:resolved'
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply]) as request:
+        client.generate('chat', 'Saved evidence: 日本語 😀', SIMPLE_SCHEMA)
+    assert request.call_count == 2
+    payload = request.call_args.kwargs['json']
+    metadata = client.last_generation
+    identity = metadata['request_identity']
+    assert identity['requested_model'] == 'chat' and identity['reported_model'] == 'chat:resolved'
+    assert identity['runtime_version'] == '0.40.11' and identity['model_digest'] is None
+    assert identity['version'] == 'ollama-chat-request-v1' and identity['provider'] == 'ollama'
+    for value, actual in ((payload, metadata['attempts'][0]['request_sha256']),
+                          (payload['messages'], identity['messages_sha256']),
+                          (payload['format'], identity['schema_sha256'])):
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        assert actual == hashlib.sha256(encoded).hexdigest()
+    assert metadata['attempts'][0]['options'] == payload['options']
+    assert 'Saved evidence:' not in json.dumps(metadata)
+    assert 'request_identity' not in payload
+
+
+@pytest.mark.parametrize('change', ['unchanged', 'prompt', 'model', 'schema', 'system', 'options'])
+def test_request_fingerprints_distinguish_changed_inputs_and_settings(change, monkeypatch):
+    from app import intelligence
+    client = OllamaClient()
+    reply = response({'value': 42})
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), reply, reply]) as request:
+        client.generate('chat', 'Original question', SIMPLE_SCHEMA)
+        original = copy.deepcopy(client.last_generation)
+        schema = copy.deepcopy(SIMPLE_SCHEMA)
+        if change == 'schema':
+            schema['properties']['value']['minimum'] = 0
+        elif change == 'system':
+            monkeypatch.setattr(intelligence, 'SYSTEM_PROMPT', intelligence.SYSTEM_PROMPT + ' Changed.')
+        elif change == 'options':
+            monkeypatch.setattr(intelligence, 'OUTPUT_TOKENS', intelligence.OUTPUT_TOKENS + 1)
+        client.generate('other' if change == 'model' else 'chat',
+                        'Changed question' if change == 'prompt' else 'Original question', schema)
+    assert request.call_count == 3  # Runtime check is reused; no inventory requests added.
+    different = original['attempts'][0]['request_sha256'] != client.last_generation['attempts'][0]['request_sha256']
+    assert different == (change != 'unchanged')
+    assert client.last_generation['request_identity']['reported_model'] is None
+
+
+def test_failed_request_keeps_its_own_fingerprint_instead_of_a_previous_success():
+    client = OllamaClient()
+    with patch('app.intelligence.requests.request', side_effect=[runtime_response(), response({'value': 42}),
+                                                              requests.Timeout()]):
+        client.generate('chat', 'First question', SIMPLE_SCHEMA)
+        previous = copy.deepcopy(client.last_generation)
+        with pytest.raises(IntelligenceError, match='timed out'):
+            client.generate('chat', 'Different question', SIMPLE_SCHEMA)
+    assert client.last_generation['attempts'][0]['status'] == 'error'
+    assert client.last_generation['attempts'][0]['request_sha256'] != previous['attempts'][0]['request_sha256']
+    assert client.last_generation['request_identity']['reported_model'] is None
+
+
+@pytest.mark.parametrize('kind', ['analysis', 'answer'])
+def test_returned_generation_metadata_is_detached_from_client_state(article, kind):
+    client = Mock()
+    client.last_generation = dict(context_window=8192, request_identity={'model_digest': None},
+                                  attempts=[dict(options={'num_ctx': 8192})])
+    if kind == 'analysis':
+        client.generate.return_value = analysis_result(article)
+        result = analyze_article(article, 'chat', client)
+    else:
+        client.embed.return_value = [[1.0, 1.0], [1.0, 1.0]]
+        client.generate.return_value = {'supported': False, 'claims': []}
+        result = answer_question('What was reported?', [article], 'chat', 'embed', client)
+    original = copy.deepcopy(result['generation'])
+    client.last_generation['request_identity']['model_digest'] = 'a' * 64
+    client.last_generation['attempts'][0]['options']['num_ctx'] = 16384
+    assert result['generation'] == original
+    if kind == 'analysis':
+        assert storage.load_insight(article, 'chat', ANALYSIS_VERSION)['generation'] == original

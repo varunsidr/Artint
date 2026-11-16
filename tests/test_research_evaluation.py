@@ -23,7 +23,9 @@ def test_observer_preserves_context_attempts_for_success_and_failure(failure):
     from unittest.mock import Mock
     delegate = Mock()
     delegate.last_generation = dict(context_window=16384,
-        attempts=[dict(context_window=8192, status='context_exceeded')])
+        request_identity=dict(version='ollama-chat-request-v1', messages_sha256='a' * 64),
+        attempts=[dict(context_window=8192, status='context_exceeded', request_sha256='b' * 64,
+                       options={'num_ctx': 8192})])
     delegate.generate.return_value = {'supported': False, 'claims': []}
     if failure:
         delegate.generate.side_effect = IntelligenceError('16K context exceeded')
@@ -35,8 +37,11 @@ def test_observer_preserves_context_attempts_for_success_and_failure(failure):
     else:
         observed.generate('model', 'prompt', {})
     delegate.last_generation['attempts'].clear()
+    delegate.last_generation['request_identity'].clear()
     assert observed.last_generation['context_window'] == 16384
     assert observed.last_generation['attempts'][0]['status'] == 'context_exceeded'
+    assert observed.last_generation['attempts'][0]['request_sha256'] == 'b' * 64
+    assert observed.last_generation['request_identity']['messages_sha256'] == 'a' * 64
 
 
 @pytest.fixture

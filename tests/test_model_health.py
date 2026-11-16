@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from app.model_health import inspect_ollama, residency, memory_share_label, MAX_METADATA_BYTES
+from app.model_health import inspect_ollama, residency, memory_share_label, MAX_METADATA_BYTES, observe_models, model_observation
 from scripts import check_install
 
 
@@ -123,3 +123,83 @@ def test_installation_cli_custom_models_can_be_checked_without_loading(capsys):
         check_install.main(['--ollama', '--chat-model', 'custom:chat', '--embedding-model', 'custom:embed'])
     report = json.loads(capsys.readouterr().out)
     assert report['ok'] and report['ollama']['loaded_models'] == []
+
+
+def manifest(name='chat', digest='a' * 64, **kwargs):
+    return dict(name=name, digest=digest, details=dict(format='gguf', family='qwen', parameter_size='8B',
+                                                     quantization_level='Q4_K_M', private_path='/private/model'), **kwargs)
+
+
+def observation(rows, names=('chat', 'embed')):
+    with patch('app.model_health.requests.get', return_value=reply({'models': rows})):
+        return observe_models('http://127.0.0.1:11434', list(names))
+
+
+def test_selected_manifest_observation_is_bounded_get_only_and_excludes_other_models():
+    with patch('app.model_health.requests.get', return_value=reply({'models': [manifest(), manifest('embed'),
+                                                                                 manifest('private-model')]})) as get:
+        snapshot = observe_models('https://model.example.org/proxy', ['chat', 'embed'])
+    assert snapshot['state'] == 'complete' and snapshot['error'] is None
+    assert set(snapshot['models']) == {'chat', 'embed'}
+    assert snapshot['models']['chat']['digest'] == 'a' * 64
+    assert snapshot['models']['chat']['details']['quantization_level'] == 'Q4_K_M'
+    assert 'private_path' not in json.dumps(snapshot) and 'private-model' not in json.dumps(snapshot)
+    assert get.call_count == 1 and get.call_args.args == ('https://model.example.org/proxy/api/tags',)
+    assert get.call_args.kwargs == dict(timeout=(3, 3), stream=True, allow_redirects=False)
+
+
+@pytest.mark.parametrize('rows', [[], [manifest(digest=None)], [manifest(digest='tag-only')],
+                                [manifest(digest=True)], [manifest(digest='a' * 65)]])
+def test_missing_models_or_manifest_digests_never_become_stable(rows):
+    snapshot = observation(rows, names=('chat',))
+    assert snapshot['state'] == 'incomplete'
+    assert model_observation(snapshot, snapshot)['state'] == 'unavailable'
+
+
+@pytest.mark.parametrize('bad', [reply({}, 302), reply({}, 500), reply({}, raw=b'invalid'),
+                                reply({}, raw=b' ' * (MAX_METADATA_BYTES + 1)),
+                                reply({'models': [manifest(), manifest()]}),
+                                reply({'models': [manifest(str(index)) for index in range(513)]})])
+def test_failed_or_ambiguous_model_observations_are_unavailable(bad):
+    with patch('app.model_health.requests.get', return_value=bad):
+        snapshot = observe_models('http://127.0.0.1:11434', ['chat'])
+    assert snapshot['state'] == 'unavailable' and snapshot['error']
+    assert snapshot['models']['chat']['installed'] is None
+
+
+def test_unreachable_identity_metadata_does_not_raise_an_inference_error():
+    with patch('app.model_health.requests.get', side_effect=requests.Timeout()):
+        snapshot = observe_models('http://127.0.0.1:11434', ['chat'])
+    assert snapshot['state'] == 'unavailable'
+    assert snapshot['models']['chat']['digest'] is None
+
+
+def test_model_observation_detects_retagging_and_removal_and_detaches_snapshots():
+    before = observation([manifest(), manifest('embed')])
+    stable = observation([manifest('embed'), manifest()])
+    assert model_observation(before, stable)['state'] == 'stable'  # Timestamps/order are not identities.
+    after = observation([manifest(digest='b' * 64), manifest('embed')])
+    compared = model_observation(before, after)
+    assert compared['state'] == 'changed'
+    assert model_observation(before, observation([manifest()]))['state'] == 'changed'
+    before['models']['chat']['digest'] = None
+    after['models']['chat']['details'].clear()
+    assert compared['before']['models']['chat']['digest'] == 'a' * 64
+    assert compared['after']['models']['chat']['details']['quantization_level'] == 'Q4_K_M'
+
+
+def test_known_manifest_change_is_retained_when_other_model_identity_is_missing():
+    before = observation([manifest(), manifest('embed', digest=None)])
+    after = observation([manifest(digest='b' * 64), manifest('embed', digest=None)])
+    assert before['state'] == after['state'] == 'incomplete'
+    assert model_observation(before, after)['state'] == 'changed'
+
+
+def test_invalid_observation_selection_and_endpoint_make_no_network_request():
+    with patch('app.model_health.requests.get') as get:
+        for names in ([], ['a', 'b', 'c'], 'chat', [None], ['x' * 513]):
+            with pytest.raises(ValueError):
+                observe_models('http://127.0.0.1:11434', names)
+        snapshot = observe_models('https://user:secret@example.org', ['chat'])
+    assert snapshot['state'] == 'unavailable' and 'secret' not in json.dumps(snapshot)
+    get.assert_not_called()
